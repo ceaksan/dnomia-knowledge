@@ -12,7 +12,8 @@ import pathspec
 
 from dnomia_knowledge.chunker.md_chunker import MdChunker
 from dnomia_knowledge.embedder import Embedder
-from dnomia_knowledge.models import IndexResult
+from dnomia_knowledge.models import Chunk, IndexResult
+from dnomia_knowledge.registry import ProjectConfig, compute_config_hash
 from dnomia_knowledge.store import Store
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class Indexer:
         project_id: str,
         project_path: str,
         file_path: str,
+        config: ProjectConfig | None = None,
     ) -> int:
         """Index a single file. Returns number of chunks created."""
         content = self._read_file(file_path)
@@ -107,12 +109,26 @@ class Indexer:
             return 0
 
         rel_path = os.path.relpath(file_path, project_path)
-        chunks = self._md_chunker.chunk(file_path, content)
+        ext = Path(file_path).suffix.lower()
+
+        content_exts = set(config.content.extensions) if config else {".md", ".mdx"}
+        code_exts = set(config.code.resolved_extensions) if config else set()
+
+        if ext in content_exts:
+            chunks = self._md_chunker.chunk(file_path, content)
+            domain = "content"
+        elif ext in code_exts:
+            chunks = self._raw_chunk(file_path, content, config)
+            domain = "code"
+        else:
+            return 0
+
         if not chunks:
             return 0
 
         # Ensure project exists (needed when index_file is called directly)
-        self.store.register_project(project_id, project_path, "content")
+        project_type = config.type if config else "content"
+        self.store.register_project(project_id, project_path, project_type)
 
         # Delete old chunks for this file
         self.store.delete_file_chunks(project_id, rel_path)
@@ -121,7 +137,7 @@ class Indexer:
         chunk_dicts = [
             {
                 "file_path": rel_path,
-                "chunk_domain": "content",
+                "chunk_domain": domain,
                 "chunk_type": c.chunk_type,
                 "name": c.name,
                 "language": c.language,
@@ -153,22 +169,59 @@ class Indexer:
         directory: str,
         incremental: bool = True,
         ignore_patterns: list[str] | None = None,
+        config: ProjectConfig | None = None,
     ) -> IndexResult:
-        """Index all markdown files in a directory."""
+        """Index files in a directory. Config-driven when config is provided."""
         start_time = time.time()
         project_path = str(Path(directory).resolve())
 
+        # Determine ignore patterns: explicit param > config > defaults
+        if ignore_patterns is not None:
+            patterns = ignore_patterns
+        elif config:
+            patterns = config.indexing.ignore_patterns
+        else:
+            patterns = DEFAULT_IGNORE_PATTERNS
+
+        # Determine max file size
+        max_file_size_kb = config.indexing.max_file_size_kb if config else MAX_FILE_SIZE_KB
+
+        # Config hash
+        config_hash = None
+        if config:
+            toml_path = Path(directory) / ".knowledge.toml"
+            if toml_path.exists():
+                config_hash = compute_config_hash(toml_path)
+
         # Register project
-        self.store.register_project(project_id, project_path, "content")
+        project_type = config.type if config else "content"
+        self.store.register_project(project_id, project_path, project_type, config_hash=config_hash)
 
         # Set embedding metadata on first use
         if not self.store.get_metadata("embedding_model"):
             self.store.set_metadata("embedding_model", self.embedder.model_name)
             self.store.set_metadata("embedding_dim", str(self.embedder.dimension))
 
+        # Build extension sets for scanning
+        content_exts = set(config.content.extensions) if config else {".md", ".mdx"}
+        code_exts = set(config.code.resolved_extensions) if config else set()
+        all_exts = content_exts | code_exts
+
+        # Build path scoping
+        content_paths = config.content.paths if config else []
+        code_paths = config.code.paths if config else []
+
         # Scan files
-        patterns = ignore_patterns or DEFAULT_IGNORE_PATTERNS
-        all_files = self._scan_files(project_path, patterns)
+        all_files = self._scan_files(
+            project_path,
+            patterns,
+            allowed_extensions=all_exts,
+            content_paths=content_paths,
+            code_paths=code_paths,
+            content_exts=content_exts,
+            code_exts=code_exts,
+            max_file_size_kb=max_file_size_kb,
+        )
 
         if incremental:
             stored_hashes = self.store.get_all_file_hashes(project_id)
@@ -185,9 +238,16 @@ class Indexer:
 
         # Index changed files
         total_chunks = 0
+        content_chunks = 0
+        code_chunks = 0
         for file_path in files_to_index:
             try:
-                count = self.index_file(project_id, project_path, file_path)
+                ext = Path(file_path).suffix.lower()
+                count = self.index_file(project_id, project_path, file_path, config)
+                if ext in content_exts:
+                    content_chunks += count
+                else:
+                    code_chunks += count
                 total_chunks += count
             except Exception as e:
                 logger.warning("Failed to index %s: %s", file_path, e)
@@ -198,13 +258,40 @@ class Indexer:
             total_files=len(all_files),
             indexed_files=len(files_to_index),
             total_chunks=total_chunks,
-            content_chunks=total_chunks,
+            content_chunks=content_chunks,
+            code_chunks=code_chunks,
             duration_seconds=round(duration, 2),
         )
 
-    def _scan_files(self, project_path: str, ignore_patterns: list[str]) -> list[str]:
-        """Scan for markdown files, respecting .gitignore and ignore patterns."""
+    def _scan_files(
+        self,
+        project_path: str,
+        ignore_patterns: list[str],
+        allowed_extensions: set[str] | None = None,
+        content_paths: list[str] | None = None,
+        code_paths: list[str] | None = None,
+        content_exts: set[str] | None = None,
+        code_exts: set[str] | None = None,
+        max_file_size_kb: int = MAX_FILE_SIZE_KB,
+    ) -> list[str]:
+        """Scan for files, respecting .gitignore, ignore patterns, and path scoping."""
         root = Path(project_path)
+
+        # Defaults for backward compat
+        if allowed_extensions is None:
+            allowed_extensions = {".md", ".mdx"}
+        if content_exts is None:
+            content_exts = {".md", ".mdx"}
+        if code_exts is None:
+            code_exts = set()
+        if content_paths is None:
+            content_paths = []
+        if code_paths is None:
+            code_paths = []
+
+        # Normalize path scoping: strip trailing slashes for consistent matching
+        norm_content_paths = [p.rstrip("/") for p in content_paths]
+        norm_code_paths = [p.rstrip("/") for p in code_paths]
 
         # Load .gitignore
         gitignore_spec = None
@@ -217,7 +304,7 @@ class Indexer:
                 pass
 
         config_spec = pathspec.PathSpec.from_lines("gitignore", ignore_patterns)
-        max_size = MAX_FILE_SIZE_KB * 1024
+        max_size = max_file_size_kb * 1024
         files = []
 
         for dirpath, dirnames, filenames in os.walk(root):
@@ -239,8 +326,19 @@ class Indexer:
                 if ext in BINARY_EXTENSIONS:
                     continue
 
-                # Sprint 1: only markdown files
-                if ext not in (".md", ".mdx"):
+                # Check extension is allowed
+                if ext not in allowed_extensions:
+                    continue
+
+                # Path scoping: if paths are configured, enforce them
+                if not self._file_in_scope(
+                    rel_path,
+                    ext,
+                    content_exts,
+                    code_exts,
+                    norm_content_paths,
+                    norm_code_paths,
+                ):
                     continue
 
                 # Skip ignored
@@ -259,6 +357,34 @@ class Indexer:
                 files.append(full_path)
 
         return files
+
+    def _file_in_scope(
+        self,
+        rel_path: str,
+        ext: str,
+        content_exts: set[str],
+        code_exts: set[str],
+        content_paths: list[str],
+        code_paths: list[str],
+    ) -> bool:
+        """Check if a file is within the configured path scope."""
+        is_content = ext in content_exts
+        is_code = ext in code_exts
+
+        if is_content and content_paths:
+            if not any(
+                rel_path.startswith(p + os.sep) or rel_path.startswith(p + "/")
+                for p in content_paths
+            ):
+                return False
+
+        if is_code and code_paths:
+            if not any(
+                rel_path.startswith(p + os.sep) or rel_path.startswith(p + "/") for p in code_paths
+            ):
+                return False
+
+        return is_content or is_code
 
     def _should_ignore_dir(
         self,
@@ -284,6 +410,45 @@ class Indexer:
                 return True
 
         return False
+
+    def _raw_chunk(
+        self,
+        file_path: str,
+        content: str,
+        config: ProjectConfig | None = None,
+    ) -> list[Chunk]:
+        """Simple raw text chunking for code files. Sprint 3 replaces with AST."""
+        max_lines = config.code.max_chunk_lines if config else 50
+        ext = Path(file_path).suffix.lstrip(".")
+        lines = content.split("\n")
+
+        if len(lines) <= max_lines:
+            return [
+                Chunk(
+                    content=content,
+                    chunk_type="block",
+                    name=Path(file_path).stem,
+                    language=ext,
+                    start_line=1,
+                    end_line=len(lines),
+                )
+            ]
+
+        # Split into blocks
+        chunks = []
+        for i in range(0, len(lines), max_lines):
+            block_lines = lines[i : i + max_lines]
+            chunks.append(
+                Chunk(
+                    content="\n".join(block_lines),
+                    chunk_type="block",
+                    name=f"{Path(file_path).stem}:{i + 1}",
+                    language=ext,
+                    start_line=i + 1,
+                    end_line=min(i + max_lines, len(lines)),
+                )
+            )
+        return chunks
 
     def _detect_changes(
         self,
