@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 
 from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.indexer import Indexer
+from dnomia_knowledge.registry import default_config, load_config
 from dnomia_knowledge.search import HybridSearch
 from dnomia_knowledge.store import Store
 
@@ -129,15 +130,19 @@ def create_server() -> FastMCP:
         if not Path(path).is_dir():
             return f"Error: {path} is not a directory."
 
-        indexer = _get_indexer()
+        # Load project config (.knowledge.toml) or use defaults
+        config = load_config(path)
+        if config is None:
+            config = default_config(path)
 
-        # Derive project ID from directory name
-        project_id = Path(path).name.lower().replace(" ", "-")
+        project_id = config.name
+        indexer = _get_indexer()
 
         result = indexer.index_directory(
             project_id=project_id,
             directory=path,
             incremental=incremental,
+            config=config,
         )
 
         return (
