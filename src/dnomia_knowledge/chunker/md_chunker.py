@@ -13,7 +13,7 @@ from dnomia_knowledge.models import Chunk
 _HEADING_RE = re.compile(r"^(#{2,3})\s+(.+)$", re.MULTILINE)
 
 # Default min chars for a chunk (below this, merge into previous)
-_DEFAULT_MIN_CHUNK_CHARS = 50
+_DEFAULT_MIN_CHUNK_CHARS = 200
 
 
 class MdChunker:

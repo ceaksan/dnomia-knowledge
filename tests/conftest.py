@@ -24,40 +24,66 @@ def db_path(tmp_dir):
 @pytest.fixture
 def sample_markdown():
     """Sample markdown content for testing."""
-    return """---
-title: Test Article
-tags: [python, testing]
-categories: [tutorial]
-description: A test article about Python testing
----
-
-## Introduction
-
-This is a test article about Python testing. It covers the basics of pytest.
-
-## Writing Tests
-
-Here is how you write a test:
-
-```python
-def test_example():
-    assert 1 + 1 == 2
-```
-
-Always use descriptive test names.
-
-## Running Tests
-
-You can run tests with:
-
-```bash
-pytest -v
-```
-
-## Conclusion
-
-Testing is important for code quality.
-"""
+    return (
+        "---\n"
+        "title: Test Article\n"
+        "tags: [python, testing]\n"
+        "categories: [tutorial]\n"
+        "description: A test article about Python testing\n"
+        "---\n"
+        "\n"
+        "## Introduction\n"
+        "\n"
+        "This is a test article about Python testing.\n"
+        "It covers the basics of pytest and how to use it\n"
+        "effectively in your projects. Understanding testing\n"
+        "fundamentals is crucial for writing reliable software.\n"
+        "We will explore various testing patterns and best\n"
+        "practices that help maintain code quality over time.\n"
+        "\n"
+        "## Writing Tests\n"
+        "\n"
+        "Here is how you write a test. First you need to\n"
+        "understand the basic structure of a pytest test\n"
+        "function. Each test should focus on a single behavior\n"
+        "and have a clear assertion that verifies the expected\n"
+        "outcome.\n"
+        "\n"
+        "```python\n"
+        "def test_example():\n"
+        "    assert 1 + 1 == 2\n"
+        "```\n"
+        "\n"
+        "Always use descriptive test names that explain what\n"
+        "behavior is being verified. Good test names serve as\n"
+        "documentation for the codebase and make it easier to\n"
+        "understand failures when they occur.\n"
+        "\n"
+        "## Running Tests\n"
+        "\n"
+        "You can run tests with pytest using various command\n"
+        "line options. The verbose flag shows individual test\n"
+        "results and helps identify which specific tests are\n"
+        "passing or failing during development.\n"
+        "\n"
+        "```bash\n"
+        "pytest -v\n"
+        "```\n"
+        "\n"
+        "You can also run specific test files or test functions\n"
+        "by providing the path. Use the -k flag to filter tests\n"
+        "by name pattern, which is useful when working on a\n"
+        "specific feature or debugging a particular test failure.\n"
+        "\n"
+        "## Conclusion\n"
+        "\n"
+        "Testing is important for code quality and long-term\n"
+        "maintainability of software projects. A comprehensive\n"
+        "test suite gives developers confidence to refactor and\n"
+        "extend code without fear of breaking existing\n"
+        "functionality. Invest time in writing good tests and\n"
+        "your future self will thank you.\n"
+    )
 
 
 @pytest.fixture
