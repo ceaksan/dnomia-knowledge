@@ -202,9 +202,6 @@ class Indexer:
         else:
             patterns = DEFAULT_IGNORE_PATTERNS
 
-        # Determine max file size
-        max_file_size_kb = config.indexing.max_file_size_kb if config else MAX_FILE_SIZE_KB
-
         # Config hash
         config_hash = None
         if config:
@@ -228,26 +225,8 @@ class Indexer:
             self.store.set_metadata("embedding_model", self.embedder.model_name)
             self.store.set_metadata("embedding_dim", str(self.embedder.dimension))
 
-        # Build extension sets for scanning
-        content_exts = set(config.content.extensions) if config else {".md", ".mdx"}
-        code_exts = set(config.code.resolved_extensions) if config else set()
-        all_exts = content_exts | code_exts
-
-        # Build path scoping
-        content_paths = config.content.paths if config else []
-        code_paths = config.code.paths if config else []
-
         # Scan files
-        all_files = self._scan_files(
-            project_path,
-            patterns,
-            allowed_extensions=all_exts,
-            content_paths=content_paths,
-            code_paths=code_paths,
-            content_exts=content_exts,
-            code_exts=code_exts,
-            max_file_size_kb=max_file_size_kb,
-        )
+        all_files = self._scan_files(project_path, patterns, config)
 
         if incremental:
             stored_hashes = self.store.get_all_file_hashes(project_id)
@@ -263,6 +242,7 @@ class Indexer:
             files_to_index = [(fp, None) for fp in all_files]
 
         # Index changed files
+        content_exts = set(config.content.extensions) if config else {".md", ".mdx"}
         total_chunks = 0
         content_chunks = 0
         code_chunks = 0
@@ -319,29 +299,18 @@ class Indexer:
         self,
         project_path: str,
         ignore_patterns: list[str],
-        allowed_extensions: set[str] | None = None,
-        content_paths: list[str] | None = None,
-        code_paths: list[str] | None = None,
-        content_exts: set[str] | None = None,
-        code_exts: set[str] | None = None,
-        max_file_size_kb: int = MAX_FILE_SIZE_KB,
+        config: ProjectConfig | None = None,
     ) -> list[str]:
         """Scan for files, respecting .gitignore, ignore patterns, and path scoping."""
         root = Path(project_path)
 
-        # Defaults for backward compat
-        if allowed_extensions is None:
-            allowed_extensions = {".md", ".mdx"}
-        if content_exts is None:
-            content_exts = {".md", ".mdx"}
-        if code_exts is None:
-            code_exts = set()
-        if content_paths is None:
-            content_paths = []
-        if code_paths is None:
-            code_paths = []
+        content_exts = set(config.content.extensions) if config else {".md", ".mdx"}
+        code_exts = set(config.code.resolved_extensions) if config else set()
+        allowed_extensions = content_exts | code_exts
+        content_paths = config.content.paths if config else []
+        code_paths = config.code.paths if config else []
+        max_file_size_kb = config.indexing.max_file_size_kb if config else MAX_FILE_SIZE_KB
 
-        # Normalize path scoping: strip trailing slashes for consistent matching
         norm_content_paths = [p.rstrip("/") for p in content_paths]
         norm_code_paths = [p.rstrip("/") for p in code_paths]
 

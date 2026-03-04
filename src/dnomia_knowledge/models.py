@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel
+
+
+class ChunkType(StrEnum):
+    BLOCK = "block"
+    MODULE = "module"
+    FUNCTION = "function"
+    METHOD = "method"
+    CLASS = "class"
+    STRUCT = "struct"
+    INTERFACE = "interface"
+    ENUM = "enum"
+    IMPL = "impl"
+    TYPE = "type"
+    HEADING = "heading"
+    SCRIPT = "script"
+    STYLE = "style"
 
 
 class Chunk(BaseModel):
     """A chunk of content or code extracted from a file."""
 
     content: str
-    chunk_type: str  # "heading" | "function" | "class" | "method" | "block" | "module"
+    chunk_type: str
     name: str | None = None
     language: str | None = None
     start_line: int = 0

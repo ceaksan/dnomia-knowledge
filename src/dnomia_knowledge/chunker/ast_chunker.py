@@ -12,7 +12,7 @@ from dnomia_knowledge.chunker.languages import (
     extract_name,
     get_chunk_node_types,
 )
-from dnomia_knowledge.models import Chunk
+from dnomia_knowledge.models import Chunk, ChunkType
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ _BODY_NODE_TYPES = frozenset(
     }
 )
 
-_CLASS_LIKE_TYPES = frozenset({"class", "struct", "impl"})
+_CLASS_LIKE_TYPES = frozenset({ChunkType.CLASS, ChunkType.STRUCT, ChunkType.IMPL})
 
 
 def _get_supported_languages() -> set[str]:
@@ -154,7 +154,7 @@ class AstChunker:
                 chunks.append(
                     Chunk(
                         content=content,
-                        chunk_type="module",
+                        chunk_type=ChunkType.MODULE,
                         name=mod_name,
                         start_line=1,
                         end_line=len(lines),
@@ -236,7 +236,9 @@ class AstChunker:
                 chunk_text = "\n".join(lines[start : end + 1])
                 if chunk_text.strip():
                     name = extract_name(child)
-                    self._append_or_split(chunks, lines, start, end, "method", name, language)
+                    self._append_or_split(
+                        chunks, lines, start, end, ChunkType.METHOD, name, language
+                    )
             elif child.type in _BODY_NODE_TYPES:
                 self._extract_children(child, language, lines, chunks)
 
@@ -259,7 +261,7 @@ class AstChunker:
         if fm_start == 0 and fm_end is not None and fm_end > fm_start:
             if fm_end > fm_start + 1:
                 self._append_or_split(
-                    chunks, lines, fm_start, fm_end, "block", "frontmatter", "astro"
+                    chunks, lines, fm_start, fm_end, ChunkType.BLOCK, "frontmatter", "astro"
                 )
             template_start = fm_end + 1
         else:
@@ -289,7 +291,7 @@ class AstChunker:
                 template_idx += 1
                 name = f"template-{template_idx}" if template_idx > 1 else "template"
                 self._append_or_split(
-                    chunks, lines, prev_end, block_start - 1, "block", name, "astro"
+                    chunks, lines, prev_end, block_start - 1, ChunkType.BLOCK, name, "astro"
                 )
             prev_end = block_end + 1
 
@@ -297,7 +299,9 @@ class AstChunker:
         if prev_end < len(lines) and _has_non_blank(lines, prev_end, len(lines)):
             template_idx += 1
             name = f"template-{template_idx}" if template_idx > 1 else "template"
-            self._append_or_split(chunks, lines, prev_end, len(lines) - 1, "block", name, "astro")
+            self._append_or_split(
+                chunks, lines, prev_end, len(lines) - 1, ChunkType.BLOCK, name, "astro"
+            )
 
         # 4. Extract script/style blocks
         for block_start, block_end, block_type in blocks:
@@ -332,7 +336,7 @@ class AstChunker:
             return [
                 Chunk(
                     content=content,
-                    chunk_type="block",
+                    chunk_type=ChunkType.BLOCK,
                     name=None,
                     start_line=1,
                     end_line=total,
@@ -340,4 +344,4 @@ class AstChunker:
                 )
             ]
 
-        return self._split_large_node(lines, "block", None, language or None, 0)
+        return self._split_large_node(lines, ChunkType.BLOCK, None, language or None, 0)

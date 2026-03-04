@@ -77,8 +77,14 @@ class HybridSearch:
 
         if not fts_results and not vec_results:
             # Fallback: prefix match
-            fts_results = self._search_fts_prefix(
-                query, project_id, domain, fetch_limit, language=language, file_pattern=file_pattern
+            fts_results = self._search_fts(
+                query,
+                project_id,
+                domain,
+                fetch_limit,
+                language=language,
+                file_pattern=file_pattern,
+                prefix=True,
             )
 
         results = rrf_merge(fts_results, vec_results, k=60, limit=limit)
@@ -128,6 +134,30 @@ class HybridSearch:
         except Exception:
             logger.debug("Failed to log search results", exc_info=True)
 
+    @staticmethod
+    def _build_filter_clauses(
+        project_id: str | None,
+        domain: str,
+        language: str | None,
+        file_pattern: str | None,
+    ) -> tuple[list[str], list]:
+        """Build WHERE clauses and params for project/domain/language/file filters."""
+        clauses: list[str] = []
+        params: list = []
+        if project_id:
+            clauses.append("c.project_id = ?")
+            params.append(project_id)
+        if domain != "all":
+            clauses.append("c.chunk_domain = ?")
+            params.append(domain)
+        if language:
+            clauses.append("c.language = ?")
+            params.append(language)
+        if file_pattern:
+            clauses.append("c.file_path LIKE ?")
+            params.append(f"%{file_pattern}%")
+        return clauses, params
+
     def _search_fts(
         self,
         query: str,
@@ -136,29 +166,16 @@ class HybridSearch:
         limit: int,
         language: str | None = None,
         file_pattern: str | None = None,
+        prefix: bool = False,
     ) -> list[SearchResult]:
         sanitized = _sanitize_fts_query(query)
         if not sanitized:
             return []
 
-        conn = self._store._connect()
-        where_clauses = []
-        params: list = []
+        match_query = " ".join(f"{word}*" for word in sanitized.split()) if prefix else sanitized
 
-        if project_id:
-            where_clauses.append("c.project_id = ?")
-            params.append(project_id)
-        if domain != "all":
-            where_clauses.append("c.chunk_domain = ?")
-            params.append(domain)
-        if language:
-            where_clauses.append("c.language = ?")
-            params.append(language)
-        if file_pattern:
-            where_clauses.append("c.file_path LIKE ?")
-            params.append(f"%{file_pattern}%")
-
-        where_sql = f"AND {' AND '.join(where_clauses)}" if where_clauses else ""
+        clauses, params = self._build_filter_clauses(project_id, domain, language, file_pattern)
+        where_sql = f"AND {' AND '.join(clauses)}" if clauses else ""
 
         sql = f"""
             SELECT c.id, c.project_id, c.file_path, c.chunk_domain, c.chunk_type,
@@ -171,63 +188,13 @@ class HybridSearch:
             ORDER BY score
             LIMIT ?
         """
-        params = [sanitized] + params + [limit]
+        all_params = [match_query] + params + [limit]
 
         try:
-            rows = conn.execute(sql, params).fetchall()
+            rows = self._store._connect().execute(sql, all_params).fetchall()
         except Exception:
             return []
 
-        return [self._row_to_result(r) for r in rows]
-
-    def _search_fts_prefix(
-        self,
-        query: str,
-        project_id: str | None,
-        domain: str,
-        limit: int,
-        language: str | None = None,
-        file_pattern: str | None = None,
-    ) -> list[SearchResult]:
-        """Layer 2 fallback: prefix match."""
-        sanitized = _sanitize_fts_query(query)
-        if not sanitized:
-            return []
-        prefix_query = " ".join(f"{word}*" for word in sanitized.split())
-        conn = self._store._connect()
-
-        where_clauses = []
-        params: list = []
-        if project_id:
-            where_clauses.append("c.project_id = ?")
-            params.append(project_id)
-        if domain != "all":
-            where_clauses.append("c.chunk_domain = ?")
-            params.append(domain)
-        if language:
-            where_clauses.append("c.language = ?")
-            params.append(language)
-        if file_pattern:
-            where_clauses.append("c.file_path LIKE ?")
-            params.append(f"%{file_pattern}%")
-        where_sql = f"AND {' AND '.join(where_clauses)}" if where_clauses else ""
-
-        sql = f"""
-            SELECT c.id, c.project_id, c.file_path, c.chunk_domain, c.chunk_type,
-                   c.name, c.language, c.start_line, c.end_line, c.content,
-                   bm25(chunks_fts) AS score
-            FROM chunks_fts f
-            JOIN chunks c ON c.id = f.rowid
-            WHERE chunks_fts MATCH ?
-            {where_sql}
-            ORDER BY score
-            LIMIT ?
-        """
-        params = [prefix_query] + params + [limit]
-        try:
-            rows = conn.execute(sql, params).fetchall()
-        except Exception:
-            return []
         return [self._row_to_result(r) for r in rows]
 
     def _search_vector(
@@ -263,21 +230,11 @@ class HybridSearch:
         distances = {r[0]: r[1] for r in vec_rows}
         placeholders = ",".join("?" * len(chunk_ids))
 
-        where_clauses = [f"c.id IN ({placeholders})"]
-        params: list = list(chunk_ids)
-
-        if project_id:
-            where_clauses.append("c.project_id = ?")
-            params.append(project_id)
-        if domain != "all":
-            where_clauses.append("c.chunk_domain = ?")
-            params.append(domain)
-        if language:
-            where_clauses.append("c.language = ?")
-            params.append(language)
-        if file_pattern:
-            where_clauses.append("c.file_path LIKE ?")
-            params.append(f"%{file_pattern}%")
+        filter_clauses, filter_params = self._build_filter_clauses(
+            project_id, domain, language, file_pattern
+        )
+        where_clauses = [f"c.id IN ({placeholders})"] + filter_clauses
+        params: list = list(chunk_ids) + filter_params
 
         where_sql = " AND ".join(where_clauses)
 
@@ -343,24 +300,25 @@ class HybridSearch:
 
         return _rrf_merge_multi(all_results, k=60, limit=limit)
 
-    def _row_to_result(self, row) -> SearchResult:
-        keys = set(row.keys())
-        content = row["content"] if "content" in keys else ""
+    @staticmethod
+    def _row_to_result(row) -> SearchResult:
+        content = row["content"]
         all_lines = content.split("\n")
         snippet = "\n".join(all_lines[:10])
         if len(all_lines) > 10:
             snippet += "\n..."
 
+        keys = row.keys()
         return SearchResult(
-            chunk_id=row["id"] if "id" in keys else row[0],
-            project_id=row["project_id"] if "project_id" in keys else "",
-            file_path=row["file_path"] if "file_path" in keys else "",
-            chunk_domain=row["chunk_domain"] if "chunk_domain" in keys else "",
-            chunk_type=row["chunk_type"] if "chunk_type" in keys else "",
-            name=row["name"] if "name" in keys else None,
-            language=row["language"] if "language" in keys else None,
-            start_line=row["start_line"] if "start_line" in keys else 0,
-            end_line=row["end_line"] if "end_line" in keys else 0,
+            chunk_id=row["id"],
+            project_id=row["project_id"],
+            file_path=row["file_path"],
+            chunk_domain=row["chunk_domain"],
+            chunk_type=row["chunk_type"],
+            name=row["name"],
+            language=row["language"],
+            start_line=row["start_line"],
+            end_line=row["end_line"],
             score=row["score"] if "score" in keys else 0.0,
             snippet=snippet,
         )

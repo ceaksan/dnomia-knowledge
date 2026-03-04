@@ -202,25 +202,27 @@ CHUNK_NODE_TYPES: dict[str, set[str]] = {
 
 
 def _classify_node_type(node_type: str) -> str:
-    """Map a tree-sitter node type to a chunk_type category."""
+    """Map a tree-sitter node type to a ChunkType value."""
+    from dnomia_knowledge.models import ChunkType
+
     node_lower = node_type.lower()
     if "function" in node_lower or "method" in node_lower or "fn" in node_lower:
-        return "function"
+        return ChunkType.FUNCTION
     if "class" in node_lower:
-        return "class"
+        return ChunkType.CLASS
     if "struct" in node_lower:
-        return "struct"
+        return ChunkType.STRUCT
     if "interface" in node_lower or "trait" in node_lower or "protocol" in node_lower:
-        return "interface"
+        return ChunkType.INTERFACE
     if "enum" in node_lower:
-        return "enum"
+        return ChunkType.ENUM
     if "impl" in node_lower:
-        return "impl"
+        return ChunkType.IMPL
     if "module" in node_lower or "namespace" in node_lower or "mod" in node_lower:
-        return "module"
+        return ChunkType.MODULE
     if "type" in node_lower:
-        return "type"
-    return "block"
+        return ChunkType.TYPE
+    return ChunkType.BLOCK
 
 
 def _extract_name(node) -> str:
