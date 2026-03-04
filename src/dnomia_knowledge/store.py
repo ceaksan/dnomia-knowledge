@@ -333,3 +333,188 @@ class Store:
         conn = self._connect()
         row = conn.execute("SELECT value FROM system_metadata WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
+
+    # -- Edges --
+
+    def insert_edges(self, edges: list[dict]) -> int:
+        """INSERT OR IGNORE edges. Returns count of inserted rows."""
+        conn = self._connect()
+        count = 0
+        for e in edges:
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO edges (source_id, target_id, edge_type, weight, metadata)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    e["source_id"],
+                    e["target_id"],
+                    e["edge_type"],
+                    e.get("weight", 1.0),
+                    e.get("metadata"),
+                ),
+            )
+            count += cursor.rowcount
+        conn.commit()
+        return count
+
+    def delete_edges_for_chunk(self, chunk_id: int, edge_type: str | None = None) -> int:
+        """Delete edges where chunk is source or target. Optionally filter by type."""
+        conn = self._connect()
+        if edge_type:
+            c1 = conn.execute(
+                "DELETE FROM edges WHERE source_id = ? AND edge_type = ?",
+                (chunk_id, edge_type),
+            )
+            c2 = conn.execute(
+                "DELETE FROM edges WHERE target_id = ? AND edge_type = ?",
+                (chunk_id, edge_type),
+            )
+        else:
+            c1 = conn.execute("DELETE FROM edges WHERE source_id = ?", (chunk_id,))
+            c2 = conn.execute("DELETE FROM edges WHERE target_id = ?", (chunk_id,))
+        conn.commit()
+        return c1.rowcount + c2.rowcount
+
+    def delete_edges_for_project(self, project_id: str, edge_type: str | None = None) -> int:
+        """Delete all edges for chunks belonging to a project."""
+        conn = self._connect()
+        if edge_type:
+            cursor = conn.execute(
+                """DELETE FROM edges WHERE edge_type = ? AND (
+                       source_id IN (SELECT id FROM chunks WHERE project_id = ?)
+                       OR target_id IN (SELECT id FROM chunks WHERE project_id = ?))""",
+                (edge_type, project_id, project_id),
+            )
+        else:
+            cursor = conn.execute(
+                """DELETE FROM edges WHERE
+                       source_id IN (SELECT id FROM chunks WHERE project_id = ?)
+                       OR target_id IN (SELECT id FROM chunks WHERE project_id = ?)""",
+                (project_id, project_id),
+            )
+        conn.commit()
+        return cursor.rowcount
+
+    def get_neighbors(
+        self,
+        chunk_id: int,
+        depth: int = 1,
+        edge_types: list[str] | None = None,
+    ) -> list[dict]:
+        """BFS traversal from chunk_id. Returns chunk info + edge metadata."""
+        conn = self._connect()
+        visited = set()
+        result = []
+        frontier = {chunk_id}
+
+        for d in range(depth):
+            if not frontier:
+                break
+            next_frontier = set()
+            for cid in frontier:
+                if cid in visited:
+                    continue
+                visited.add(cid)
+                # Get outgoing edges
+                if edge_types:
+                    placeholders = ",".join("?" for _ in edge_types)
+                    rows = conn.execute(
+                        f"""SELECT e.target_id, e.edge_type, e.weight, e.metadata,
+                                   c.file_path, c.chunk_type, c.name, c.content
+                            FROM edges e
+                            JOIN chunks c ON c.id = e.target_id
+                            WHERE e.source_id = ? AND e.edge_type IN ({placeholders})""",
+                        (cid, *edge_types),
+                    ).fetchall()
+                    # Also incoming edges
+                    rows += conn.execute(
+                        f"""SELECT e.source_id, e.edge_type, e.weight, e.metadata,
+                                   c.file_path, c.chunk_type, c.name, c.content
+                            FROM edges e
+                            JOIN chunks c ON c.id = e.source_id
+                            WHERE e.target_id = ? AND e.edge_type IN ({placeholders})""",
+                        (cid, *edge_types),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT e.target_id, e.edge_type, e.weight, e.metadata,
+                                  c.file_path, c.chunk_type, c.name, c.content
+                           FROM edges e
+                           JOIN chunks c ON c.id = e.target_id
+                           WHERE e.source_id = ?""",
+                        (cid,),
+                    ).fetchall()
+                    rows += conn.execute(
+                        """SELECT e.source_id, e.edge_type, e.weight, e.metadata,
+                                  c.file_path, c.chunk_type, c.name, c.content
+                           FROM edges e
+                           JOIN chunks c ON c.id = e.source_id
+                           WHERE e.target_id = ?""",
+                        (cid,),
+                    ).fetchall()
+
+                for row in rows:
+                    neighbor_id = row[0]
+                    if neighbor_id not in visited:
+                        next_frontier.add(neighbor_id)
+                        result.append(
+                            {
+                                "chunk_id": neighbor_id,
+                                "edge_type": row[1],
+                                "weight": row[2],
+                                "edge_metadata": row[3],
+                                "file_path": row[4],
+                                "chunk_type": row[5],
+                                "name": row[6],
+                                "content": row[7],
+                                "depth": d + 1,
+                            }
+                        )
+            frontier = next_frontier
+
+        return result
+
+    def get_edges_for_project(self, project_id: str) -> list[dict]:
+        """Get all edges for a project."""
+        conn = self._connect()
+        rows = conn.execute(
+            """SELECT e.source_id, e.target_id, e.edge_type, e.weight, e.metadata
+               FROM edges e
+               WHERE e.source_id IN (SELECT id FROM chunks WHERE project_id = ?)""",
+            (project_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_project_edge_stats(self, project_id: str) -> dict[str, int]:
+        """Count edges by type for a project."""
+        conn = self._connect()
+        rows = conn.execute(
+            """SELECT e.edge_type, COUNT(*) as cnt
+               FROM edges e
+               WHERE e.source_id IN (SELECT id FROM chunks WHERE project_id = ?)
+               GROUP BY e.edge_type""",
+            (project_id,),
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def get_chunk_ids_for_project(self, project_id: str) -> list[int]:
+        """Get all chunk IDs for a project."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id FROM chunks WHERE project_id = ? ORDER BY id",
+            (project_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def update_chunk_metadata(self, chunk_id: int, metadata_updates: dict) -> None:
+        """JSON merge metadata updates into existing chunk metadata."""
+        conn = self._connect()
+        row = conn.execute("SELECT metadata FROM chunks WHERE id = ?", (chunk_id,)).fetchone()
+        if row is None:
+            return
+        existing = json.loads(row[0]) if row[0] else {}
+        existing.update(metadata_updates)
+        conn.execute(
+            "UPDATE chunks SET metadata = ? WHERE id = ?",
+            (json.dumps(existing, ensure_ascii=False, default=str), chunk_id),
+        )
+        conn.commit()

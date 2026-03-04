@@ -191,3 +191,196 @@ class TestSystemMetadata:
         store.set_metadata("key", "v1")
         store.set_metadata("key", "v2")
         assert store.get_metadata("key") == "v2"
+
+
+def _setup_project_with_chunks(db_path: str, n_chunks: int = 3) -> tuple:
+    """Helper: create project with n chunks, return (store, chunk_ids)."""
+    store = Store(db_path)
+    store.register_project("test", "/tmp/test", "content")
+    chunks = [
+        {"file_path": f"file{i}.md", "content": f"chunk {i} content"} for i in range(n_chunks)
+    ]
+    ids = store.insert_chunks("test", chunks)
+    return store, ids
+
+
+class TestEdgeCRUD:
+    def test_insert_edges(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        count = store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link", "weight": 0.9},
+                {"source_id": ids[1], "target_id": ids[2], "edge_type": "tag"},
+            ]
+        )
+        assert count == 2
+
+    def test_insert_duplicate_ignored(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+            ]
+        )
+        count = store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+            ]
+        )
+        assert count == 0
+
+    def test_delete_edges_for_chunk(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[2], "target_id": ids[0], "edge_type": "tag"},
+                {"source_id": ids[1], "target_id": ids[2], "edge_type": "link"},
+            ]
+        )
+        deleted = store.delete_edges_for_chunk(ids[0])
+        assert deleted == 2  # one as source, one as target
+
+    def test_delete_edges_for_chunk_by_type(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[0], "target_id": ids[2], "edge_type": "tag"},
+            ]
+        )
+        deleted = store.delete_edges_for_chunk(ids[0], edge_type="link")
+        assert deleted == 1
+        # tag edge should remain
+        edges = store.get_edges_for_project("test")
+        assert len(edges) == 1
+        assert edges[0]["edge_type"] == "tag"
+
+    def test_delete_edges_for_project(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[1], "target_id": ids[2], "edge_type": "semantic"},
+            ]
+        )
+        deleted = store.delete_edges_for_project("test")
+        assert deleted == 2
+
+    def test_delete_edges_for_project_by_type(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[1], "target_id": ids[2], "edge_type": "semantic"},
+            ]
+        )
+        deleted = store.delete_edges_for_project("test", edge_type="link")
+        assert deleted == 1
+
+    def test_get_neighbors_depth1(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[1], "target_id": ids[2], "edge_type": "link"},
+            ]
+        )
+        neighbors = store.get_neighbors(ids[0], depth=1)
+        neighbor_ids = {n["chunk_id"] for n in neighbors}
+        assert ids[1] in neighbor_ids
+        assert ids[2] not in neighbor_ids
+
+    def test_get_neighbors_depth2(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[1], "target_id": ids[2], "edge_type": "link"},
+            ]
+        )
+        neighbors = store.get_neighbors(ids[0], depth=2)
+        neighbor_ids = {n["chunk_id"] for n in neighbors}
+        assert ids[1] in neighbor_ids
+        assert ids[2] in neighbor_ids
+
+    def test_get_neighbors_with_edge_type_filter(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[0], "target_id": ids[2], "edge_type": "semantic"},
+            ]
+        )
+        neighbors = store.get_neighbors(ids[0], depth=1, edge_types=["link"])
+        assert len(neighbors) == 1
+        assert neighbors[0]["edge_type"] == "link"
+
+    def test_get_edges_for_project(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+            ]
+        )
+        edges = store.get_edges_for_project("test")
+        assert len(edges) == 1
+        assert edges[0]["source_id"] == ids[0]
+
+    def test_get_project_edge_stats(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.insert_edges(
+            [
+                {"source_id": ids[0], "target_id": ids[1], "edge_type": "link"},
+                {"source_id": ids[0], "target_id": ids[2], "edge_type": "link"},
+                {"source_id": ids[1], "target_id": ids[2], "edge_type": "tag"},
+            ]
+        )
+        stats = store.get_project_edge_stats("test")
+        assert stats["link"] == 2
+        assert stats["tag"] == 1
+
+    def test_get_chunk_ids_for_project(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        result = store.get_chunk_ids_for_project("test")
+        assert result == sorted(ids)
+
+    def test_update_chunk_metadata_merge(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        chunk_ids = store.insert_chunks(
+            "test",
+            [{"file_path": "a.md", "content": "test", "metadata": json.dumps({"key1": "val1"})}],
+        )
+        store.update_chunk_metadata(chunk_ids[0], {"key2": "val2"})
+        conn = store._connect()
+        row = conn.execute("SELECT metadata FROM chunks WHERE id = ?", (chunk_ids[0],)).fetchone()
+        meta = json.loads(row[0])
+        assert meta["key1"] == "val1"
+        assert meta["key2"] == "val2"
+
+    def test_update_chunk_metadata_overwrite(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        chunk_ids = store.insert_chunks(
+            "test",
+            [{"file_path": "a.md", "content": "test", "metadata": json.dumps({"key": "old"})}],
+        )
+        store.update_chunk_metadata(chunk_ids[0], {"key": "new"})
+        conn = store._connect()
+        row = conn.execute("SELECT metadata FROM chunks WHERE id = ?", (chunk_ids[0],)).fetchone()
+        meta = json.loads(row[0])
+        assert meta["key"] == "new"
+
+    def test_update_chunk_metadata_null_initial(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        chunk_ids = store.insert_chunks(
+            "test",
+            [{"file_path": "a.md", "content": "test"}],
+        )
+        store.update_chunk_metadata(chunk_ids[0], {"community_id": 3})
+        conn = store._connect()
+        row = conn.execute("SELECT metadata FROM chunks WHERE id = ?", (chunk_ids[0],)).fetchone()
+        meta = json.loads(row[0])
+        assert meta["community_id"] == 3
