@@ -1,4 +1,4 @@
-"""Integration tests for Sprint 2, Sprint 3, and Sprint 4."""
+"""Integration tests for Sprint 2, Sprint 3, Sprint 4, and Sprint 5."""
 
 from __future__ import annotations
 
@@ -685,3 +685,195 @@ extensions = [".md"]
         assert len(logs_after) == 0
 
         store.close()
+
+
+class TestSprint5Integration:
+    """Sprint 5: language/file_pattern filters, PreToolUse hook blocking."""
+
+    @pytest.fixture
+    def mixed_project(self, tmp_dir):
+        """Project with .md and .py files in different directories."""
+        toml_content = b"""
+[project]
+name = "s5-test"
+type = "saas"
+
+[content]
+paths = ["docs/"]
+extensions = [".md"]
+
+[code]
+preset = "python"
+paths = ["src/"]
+"""
+        (tmp_dir / ".knowledge.toml").write_bytes(toml_content)
+        (tmp_dir / "docs").mkdir()
+        (tmp_dir / "docs" / "setup.md").write_text(
+            "## Setup Guide\n\n"
+            "This document explains how to set up the development environment "
+            "for the project. Install Python dependencies with pip and configure "
+            "environment variables before running the application. Make sure to "
+            "use a virtual environment to isolate project dependencies from "
+            "system packages.\n"
+        )
+        (tmp_dir / "docs" / "api.md").write_text(
+            "## API Reference\n\n"
+            "The REST API provides endpoints for managing user resources. "
+            "Authentication is handled via bearer tokens. All requests must "
+            "include an Authorization header with a valid JWT token. Rate "
+            "limiting is applied per API key to prevent abuse and ensure "
+            "fair usage across all consumers.\n"
+        )
+        (tmp_dir / "src").mkdir()
+        (tmp_dir / "src" / "main.py").write_text(
+            "def start_server(host: str, port: int) -> None:\n"
+            '    """Start the HTTP server."""\n'
+            "    print(f'Listening on {host}:{port}')\n"
+            "\n\n"
+            "def stop_server() -> None:\n"
+            '    """Stop the HTTP server gracefully."""\n'
+            "    print('Shutting down')\n"
+        )
+        (tmp_dir / "src" / "db.py").write_text(
+            "def connect(dsn: str) -> object:\n"
+            '    """Connect to the database."""\n'
+            "    return None\n"
+            "\n\n"
+            "def disconnect(conn: object) -> None:\n"
+            '    """Close database connection."""\n'
+            "    pass\n"
+        )
+        return tmp_dir
+
+    def test_search_with_language_filter(self, mixed_project, db_path):
+        """Index project, search with language='python', verify only Python results."""
+        config = load_config(mixed_project)
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+        indexer.index_directory("s5-test", str(mixed_project), config=config)
+
+        search = HybridSearch(store, embedder)
+        results = search.search("server database", project_id="s5-test", language="python")
+
+        assert len(results) > 0
+        for r in results:
+            assert r.language == "python", (
+                f"Expected language='python', got '{r.language}' for {r.file_path}"
+            )
+
+        store.close()
+
+    def test_search_with_file_pattern_filter(self, mixed_project, db_path):
+        """Index project, search with file_pattern='docs', verify path filtering."""
+        config = load_config(mixed_project)
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+        indexer.index_directory("s5-test", str(mixed_project), config=config)
+
+        search = HybridSearch(store, embedder)
+        results = search.search("setup environment API", project_id="s5-test", file_pattern="docs")
+
+        assert len(results) > 0
+        for r in results:
+            assert "docs" in r.file_path, f"Expected 'docs' in file_path, got '{r.file_path}'"
+
+        store.close()
+
+    def test_pre_tool_use_blocks_large_file_read(self, mixed_project, db_path):
+        """PreToolUse hook blocks Read for large files inside indexed project."""
+        config = load_config(mixed_project)
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+        indexer.index_directory("s5-test", str(mixed_project), config=config)
+        store.close()
+
+        large_file = mixed_project / "src" / "big_module.py"
+        lines = [f"# line {i}\n" for i in range(350)]
+        large_file.write_text("".join(lines))
+
+        hook_input = json.dumps(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": str(large_file.resolve())},
+            }
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "dnomia_knowledge.hooks.pre_tool_use"],
+            input=hook_input,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DNOMIA_KNOWLEDGE_DB": db_path},
+        )
+
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        response = json.loads(result.stdout.strip())
+        assert response["decision"] == "block"
+        assert "350 lines" in response["reason"]
+
+    def test_pre_tool_use_allows_small_file_read(self, mixed_project, db_path):
+        """PreToolUse hook allows Read for small files (< 300 lines)."""
+        config = load_config(mixed_project)
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+        indexer.index_directory("s5-test", str(mixed_project), config=config)
+        store.close()
+
+        small_file = mixed_project / "src" / "tiny.py"
+        small_file.write_text("x = 1\ny = 2\n")
+
+        hook_input = json.dumps(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": str(small_file.resolve())},
+            }
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "dnomia_knowledge.hooks.pre_tool_use"],
+            input=hook_input,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DNOMIA_KNOWLEDGE_DB": db_path},
+        )
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+    def test_pre_tool_use_blocks_grep_in_indexed_project(self, mixed_project, db_path):
+        """PreToolUse hook blocks Grep targeting an indexed project directory."""
+        config = load_config(mixed_project)
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+        indexer.index_directory("s5-test", str(mixed_project), config=config)
+        store.close()
+
+        hook_input = json.dumps(
+            {
+                "tool_name": "Grep",
+                "tool_input": {
+                    "pattern": "def connect",
+                    "path": str(mixed_project.resolve()),
+                },
+            }
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-m", "dnomia_knowledge.hooks.pre_tool_use"],
+            input=hook_input,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DNOMIA_KNOWLEDGE_DB": db_path},
+        )
+
+        assert result.returncode == 0
+        assert result.stdout.strip() != ""
+        response = json.loads(result.stdout.strip())
+        assert response["decision"] == "block"
+        assert "search" in response["reason"].lower()
