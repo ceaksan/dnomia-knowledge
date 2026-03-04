@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import os
+import subprocess as _subprocess
+import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 
@@ -12,6 +16,33 @@ from dnomia_knowledge.indexer import Indexer
 from dnomia_knowledge.registry import default_config, load_config
 from dnomia_knowledge.search import HybridSearch
 from dnomia_knowledge.store import Store
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Minimal HTML-to-text converter using stdlib."""
+
+    def __init__(self):
+        super().__init__()
+        self._text: list[str] = []
+        self._skip = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "nav", "header", "footer"):
+            self._skip = True
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "nav", "header", "footer"):
+            self._skip = False
+        if tag in ("p", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr"):
+            self._text.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip:
+            self._text.append(data)
+
+    def get_text(self) -> str:
+        return "\n".join(line.strip() for line in "".join(self._text).split("\n") if line.strip())
+
 
 # Default DB path
 _DEFAULT_DB_PATH = os.path.expanduser("~/.local/share/dnomia-knowledge/knowledge.db")
@@ -54,6 +85,22 @@ def _get_indexer() -> Indexer:
 
 def _default_project() -> str | None:
     return os.environ.get("DNOMIA_KNOWLEDGE_PROJECT")
+
+
+def _find_project_for_path(file_path: str) -> tuple[str, str, str] | None:
+    """Returns (project_id, project_path, rel_path) or None."""
+    store = _get_store()
+    projects = store.list_projects()
+    best = None
+    best_len = 0
+    for proj in projects:
+        proj_path = proj["path"]
+        normalized = proj_path if proj_path.endswith("/") else proj_path + "/"
+        if file_path.startswith(normalized) or file_path == proj_path:
+            if len(proj_path) > best_len:
+                best = (proj["id"], proj_path, file_path[len(proj_path) :].lstrip("/"))
+                best_len = len(proj_path)
+    return best
 
 
 def create_server() -> FastMCP:
@@ -312,6 +359,216 @@ def create_server() -> FastMCP:
             return "\n".join(lines)
 
         return f"Unknown mode: {mode}. Use 'neighbors' or 'communities'."
+
+    @server.tool()
+    async def read_file(
+        file_path: str, query: str | None = None, project: str | None = None
+    ) -> str:
+        """Smart file reading with index awareness.
+
+        If the file is indexed and large, returns relevant chunks instead of full content.
+        Falls back to raw file reading for non-indexed files.
+
+        Args:
+            file_path: Absolute path to the file to read
+            query: Optional search query to find relevant sections in large files
+            project: Project ID (default: auto-detect from file path)
+        """
+        p = Path(file_path)
+        if not p.is_file():
+            return f"Error: file not found: {file_path}"
+
+        # Resolve project
+        project_id = None
+        rel_path = None
+        if project:
+            proj = _get_store().get_project(project)
+            if proj:
+                project_id = project
+                proj_path = proj["path"]
+                normalized = proj_path if proj_path.endswith("/") else proj_path + "/"
+                if file_path.startswith(normalized):
+                    rel_path = file_path[len(proj_path) :].lstrip("/")
+        else:
+            match = _find_project_for_path(file_path)
+            if match:
+                project_id, _, rel_path = match
+
+        # Check if file is indexed and get line count
+        store = _get_store()
+        line_count = None
+        if project_id and rel_path:
+            line_count = store.get_file_line_count(project_id, rel_path)
+
+        # Small file or not indexed: read from disk with line numbers
+        if line_count is None or line_count < 200:
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                return f"Error reading file: {e}"
+            lines = text.split("\n")
+            numbered = [f"{i + 1:6}\t{line}" for i, line in enumerate(lines)]
+            return "\n".join(numbered)
+
+        # Large file + query: use search to find relevant chunks
+        if query:
+            searcher = _get_search()
+            results = searcher.search(
+                query,
+                project_id=project_id,
+                domain="all",
+                limit=5,
+                file_pattern=rel_path,
+            )
+            if not results:
+                return f"No relevant sections found for query '{query}' in {file_path}."
+            parts = [f"Relevant sections in {file_path} ({line_count} lines):"]
+            for i, r in enumerate(results, 1):
+                header = f"\n[{i}] L{r.start_line}-{r.end_line}"
+                if r.name:
+                    header += f" ({r.chunk_type}: {r.name})"
+                header += f" score={r.score:.4f}"
+                full_content = store.get_chunk_content(r.chunk_id)
+                content = full_content if full_content else (r.snippet or "")
+                parts.append(header)
+                parts.append(content)
+            return "\n".join(parts)
+
+        # Large file + no query: return metadata + first 50 lines
+        chunks = store.get_chunks_for_file(project_id, rel_path)
+        parts = [f"{file_path} ({line_count} lines, {len(chunks)} chunks)"]
+        parts.append("\nChunks:")
+        for c in chunks:
+            label = f"  {c['chunk_type']}"
+            if c["name"]:
+                label += f" {c['name']}"
+            label += f" L{c['start_line']}-{c['end_line']}"
+            parts.append(label)
+
+        parts.append("\nFirst 50 lines:")
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            return f"Error reading file: {e}"
+        lines = text.split("\n")[:50]
+        numbered = [f"{i + 1:6}\t{line}" for i, line in enumerate(lines)]
+        parts.append("\n".join(numbered))
+        return "\n".join(parts)
+
+    @server.tool()
+    async def execute(command: str, cwd: str | None = None, timeout: int = 30) -> str:
+        """Execute a shell command and return output.
+
+        Captures stdout and stderr. If output exceeds 100 lines, truncates with summary.
+        Use this instead of Bash for commands that produce large output.
+
+        Args:
+            command: Shell command to execute
+            cwd: Working directory (default: current directory)
+            timeout: Timeout in seconds (max 120, default 30)
+        """
+        timeout = min(timeout, 120)
+
+        try:
+            result = _subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+            )
+        except _subprocess.TimeoutExpired:
+            return f"Command timed out after {timeout}s."
+        except Exception as e:
+            return f"Error: {e}"
+
+        output = result.stdout
+        if result.returncode != 0 and result.stderr:
+            output += f"\n--- stderr (exit code {result.returncode}) ---\n{result.stderr}"
+        elif result.stderr:
+            output += f"\n--- stderr ---\n{result.stderr}"
+
+        lines = output.split("\n")
+        if len(lines) <= 100:
+            return output
+
+        truncated = "\n".join(lines[:100])
+        return f"{truncated}\n\n... {len(lines) - 100} more lines truncated."
+
+    @server.tool()
+    async def fetch_and_index(url: str, project: str | None = None) -> str:
+        """Fetch URL content, convert to text, and index for searching.
+
+        After indexing, the content is searchable via the search tool.
+
+        Args:
+            url: URL to fetch and index
+            project: Project ID to store under (default: derived from URL domain)
+        """
+        from dnomia_knowledge.chunker.md_chunker import MdChunker
+
+        # Fetch URL
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310
+                raw = resp.read()
+                content_type = resp.headers.get_content_type() or ""
+                charset = resp.headers.get_content_charset() or "utf-8"
+                body = raw.decode(charset, errors="replace")
+        except Exception as e:
+            return f"Error fetching {url}: {e}"
+
+        # Strip HTML tags if HTML content
+        if "html" in content_type:
+            extractor = _HTMLTextExtractor()
+            extractor.feed(body)
+            text = extractor.get_text()
+        else:
+            text = body
+
+        if not text.strip():
+            return f"No content extracted from {url}."
+
+        # Derive project name from domain
+        project_id = project or urlparse(url).netloc.replace(".", "-")
+        url_path = urlparse(url).path or "/"
+
+        # Register project
+        store = _get_store()
+        store.register_project(project_id, url, "web")
+
+        # Chunk text
+        chunker = MdChunker()
+        chunks = chunker.chunk(url_path, text)
+
+        if not chunks:
+            return f"No chunks extracted from {url}."
+
+        # Build chunk dicts
+        chunks_data = [
+            {
+                "file_path": url_path,
+                "chunk_domain": "content",
+                "chunk_type": c.chunk_type,
+                "name": c.name,
+                "language": "md",
+                "content": c.content,
+                "start_line": c.start_line,
+                "end_line": c.end_line,
+            }
+            for c in chunks
+        ]
+
+        # Insert chunks + embed vectors
+        chunk_ids = store.insert_chunks(project_id, chunks_data)
+        embedder = _get_embedder()
+        vectors = embedder.embed_passages([c.content for c in chunks])
+        store.insert_chunk_vectors(chunk_ids, vectors)
+
+        word_count = len(text.split())
+        return (
+            f"Indexed {url}: {word_count} words, {len(chunk_ids)} chunks. Use search tool to query."
+        )
 
     return server
 
