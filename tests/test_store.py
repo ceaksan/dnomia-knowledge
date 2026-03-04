@@ -384,3 +384,105 @@ class TestEdgeCRUD:
         row = conn.execute("SELECT metadata FROM chunks WHERE id = ?", (chunk_ids[0],)).fetchone()
         meta = json.loads(row[0])
         assert meta["community_id"] == 3
+
+
+class TestInteractionCRUD:
+    def test_log_interaction(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.log_interaction(ids[0], "read", "Read")
+        conn = store._connect()
+        row = conn.execute(
+            "SELECT * FROM chunk_interactions WHERE chunk_id = ?", (ids[0],)
+        ).fetchone()
+        assert row is not None
+        assert row["interaction"] == "read"
+        assert row["source_tool"] == "Read"
+
+    def test_get_interaction_counts(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.log_interaction(ids[0], "read", "Read")
+        store.log_interaction(ids[0], "read", "Read")
+        store.log_interaction(ids[0], "edit", "Edit")
+        store.log_interaction(ids[1], "read", "Read")
+
+        counts = store.get_interaction_counts(ids)
+        assert counts[ids[0]] == 3
+        assert counts[ids[1]] == 1
+        assert ids[2] not in counts
+
+    def test_interaction_counts_filter_by_type(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.log_interaction(ids[0], "read", "Read")
+        store.log_interaction(ids[0], "edit", "Edit")
+        store.log_interaction(ids[0], "search_hit", "search")
+
+        counts = store.get_interaction_counts(ids, interactions=["read", "edit"])
+        assert counts[ids[0]] == 2
+
+    def test_interaction_counts_filter_by_project(self, db_path):
+        store = Store(db_path)
+        store.register_project("proj-a", "/tmp/a", "content")
+        store.register_project("proj-b", "/tmp/b", "content")
+        ids_a = store.insert_chunks("proj-a", [{"file_path": "a.md", "content": "a"}])
+        ids_b = store.insert_chunks("proj-b", [{"file_path": "b.md", "content": "b"}])
+
+        store.log_interaction(ids_a[0], "read", "Read")
+        store.log_interaction(ids_b[0], "read", "Read")
+
+        counts_a = store.get_interaction_counts(ids_a + ids_b, project_id="proj-a")
+        assert ids_a[0] in counts_a
+        assert ids_b[0] not in counts_a
+
+    def test_delete_old_interactions(self, db_path):
+        store, ids = _setup_project_with_chunks(db_path)
+        store.log_interaction(ids[0], "read", "Read")
+        # Set timestamp to 100 days ago
+        conn = store._connect()
+        conn.execute("UPDATE chunk_interactions SET timestamp = datetime('now', '-100 days')")
+        conn.commit()
+        deleted = store.delete_old_interactions(days=90)
+        assert deleted == 1
+
+
+class TestSearchLogCRUD:
+    def test_log_search(self, db_path):
+        store = Store(db_path)
+        store.log_search("test query", "proj", "all", [1, 2, 3], 3)
+        logs = store.get_search_log()
+        assert len(logs) == 1
+        assert logs[0]["query"] == "test query"
+        assert logs[0]["result_count"] == 3
+
+    def test_get_search_log_filter_project(self, db_path):
+        store = Store(db_path)
+        store.log_search("q1", "proj-a", "all", [1], 1)
+        store.log_search("q2", "proj-b", "all", [2], 1)
+        logs = store.get_search_log(project_id="proj-a")
+        assert len(logs) == 1
+        assert logs[0]["query"] == "q1"
+
+    def test_delete_old_search_logs(self, db_path):
+        store = Store(db_path)
+        store.log_search("old query", None, "all", [], 0)
+        conn = store._connect()
+        conn.execute("UPDATE search_log SET timestamp = datetime('now', '-100 days')")
+        conn.commit()
+        deleted = store.delete_old_search_logs(days=90)
+        assert deleted == 1
+
+    def test_get_chunk_ids_for_file(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        store.insert_chunks(
+            "test",
+            [
+                {"file_path": "a.md", "content": "chunk 1"},
+                {"file_path": "a.md", "content": "chunk 2"},
+                {"file_path": "b.md", "content": "chunk 3"},
+            ],
+        )
+        ids = store.get_chunk_ids_for_file("test", "a.md")
+        assert len(ids) == 2
+
+        ids_b = store.get_chunk_ids_for_file("test", "b.md")
+        assert len(ids_b) == 1

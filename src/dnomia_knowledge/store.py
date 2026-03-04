@@ -518,3 +518,118 @@ class Store:
             (json.dumps(existing, ensure_ascii=False, default=str), chunk_id),
         )
         conn.commit()
+
+    # -- Chunk Interactions --
+
+    def log_interaction(self, chunk_id: int, interaction: str, source_tool: str) -> None:
+        """Log a chunk interaction (read, edit, search_hit)."""
+        conn = self._connect()
+        conn.execute(
+            "INSERT INTO chunk_interactions (chunk_id, interaction, source_tool) VALUES (?, ?, ?)",
+            (chunk_id, interaction, source_tool),
+        )
+        conn.commit()
+
+    def get_interaction_counts(
+        self,
+        chunk_ids: list[int],
+        days: int = 30,
+        interactions: list[str] | None = None,
+        project_id: str | None = None,
+    ) -> dict[int, int]:
+        """Batch count interactions within N days, filtered by type and project."""
+        if not chunk_ids:
+            return {}
+        conn = self._connect()
+        placeholders = ",".join("?" for _ in chunk_ids)
+        params: list = list(chunk_ids)
+
+        where = [
+            f"ci.chunk_id IN ({placeholders})",
+            f"ci.timestamp >= datetime('now', '-{days} days')",
+        ]
+
+        if interactions:
+            i_ph = ",".join("?" for _ in interactions)
+            where.append(f"ci.interaction IN ({i_ph})")
+            params.extend(interactions)
+
+        if project_id:
+            where.append("c.project_id = ?")
+            params.append(project_id)
+
+        where_sql = " AND ".join(where)
+        join = "JOIN chunks c ON c.id = ci.chunk_id" if project_id else ""
+
+        sql = f"""
+            SELECT ci.chunk_id, COUNT(*) as cnt
+            FROM chunk_interactions ci
+            {join}
+            WHERE {where_sql}
+            GROUP BY ci.chunk_id
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def delete_old_interactions(self, days: int = 90) -> int:
+        """Delete interactions older than N days."""
+        conn = self._connect()
+        cursor = conn.execute(
+            f"DELETE FROM chunk_interactions WHERE timestamp < datetime('now', '-{days} days')",
+        )
+        conn.commit()
+        return cursor.rowcount
+
+    # -- Search Log --
+
+    def log_search(
+        self,
+        query: str,
+        project_id: str | None,
+        domain: str,
+        result_chunk_ids: list[int],
+        result_count: int,
+    ) -> None:
+        """Log a search query and its results."""
+        conn = self._connect()
+        conn.execute(
+            """INSERT INTO search_log (query, project_id, domain, result_chunk_ids, result_count)
+               VALUES (?, ?, ?, ?, ?)""",
+            (query, project_id, domain, json.dumps(result_chunk_ids), result_count),
+        )
+        conn.commit()
+
+    def get_search_log(self, project_id: str | None = None, limit: int = 100) -> list[dict]:
+        """Fetch recent search log entries."""
+        conn = self._connect()
+        if project_id:
+            rows = conn.execute(
+                "SELECT * FROM search_log WHERE project_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (project_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM search_log ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_old_search_logs(self, days: int = 90) -> int:
+        """Delete search logs older than N days."""
+        conn = self._connect()
+        cursor = conn.execute(
+            f"DELETE FROM search_log WHERE timestamp < datetime('now', '-{days} days')",
+        )
+        conn.commit()
+        return cursor.rowcount
+
+    # -- File -> Chunk Mapping --
+
+    def get_chunk_ids_for_file(self, project_id: str, file_path: str) -> list[int]:
+        """Get chunk IDs for a specific file in a project."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id FROM chunks WHERE project_id = ? AND file_path = ? ORDER BY id",
+            (project_id, file_path),
+        ).fetchall()
+        return [r[0] for r in rows]
