@@ -74,7 +74,35 @@ class HybridSearch:
             fts_results = self._search_fts_prefix(query, project_id, domain, fetch_limit)
 
         results = rrf_merge(fts_results, vec_results, k=60, limit=limit)
+        results = self._apply_interaction_boost(results, project_id)
         self._log_search_results(query, project_id, domain, results)
+        return results
+
+    def _apply_interaction_boost(
+        self,
+        results: list[SearchResult],
+        project_id: str | None,
+        weight: float = 0.1,
+    ) -> list[SearchResult]:
+        """Boost results based on read/edit interaction history."""
+        if not results:
+            return results
+
+        chunk_ids = [r.chunk_id for r in results]
+        try:
+            counts = self._store.get_interaction_counts(
+                chunk_ids, days=30, interactions=["read", "edit"], project_id=project_id
+            )
+        except Exception:
+            logger.debug("Failed to get interaction counts", exc_info=True)
+            return results
+
+        for r in results:
+            count = counts.get(r.chunk_id, 0)
+            bonus = weight * min(count, 10) / 10
+            r.score = round(r.score + bonus, 6)
+
+        results.sort(key=lambda x: x.score, reverse=True)
         return results
 
     def _log_search_results(
@@ -260,10 +288,12 @@ class HybridSearch:
 
         if len(all_results) == 1:
             results = all_results[0][:limit]
+            results = self._apply_interaction_boost(results, project_id)
             self._log_search_results(query, project_id, domain, results)
             return results
 
         merged = _rrf_merge_multi(all_results, k=60, limit=limit)
+        merged = self._apply_interaction_boost(merged, project_id)
         self._log_search_results(query, project_id, domain, merged)
         return merged
 

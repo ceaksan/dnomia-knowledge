@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from dnomia_knowledge.embedder import Embedder
+from dnomia_knowledge.models import SearchResult
 from dnomia_knowledge.search import HybridSearch
 from dnomia_knowledge.store import Store
 
@@ -130,6 +131,152 @@ class TestSearchLogging:
 
         logs = store.get_search_log(project_id="test")
         assert logs[0]["result_count"] == len(results)
+
+
+class TestInteractionBoost:
+    def _make_result(self, chunk_id: int, score: float) -> SearchResult:
+        return SearchResult(
+            chunk_id=chunk_id,
+            project_id="test",
+            file_path=f"file{chunk_id}.md",
+            chunk_domain="content",
+            chunk_type="heading",
+            score=score,
+        )
+
+    def test_max_boost_with_10_reads(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+
+        chunk_ids = store.insert_chunks(
+            "test",
+            [
+                {
+                    "file_path": "boost.md",
+                    "chunk_domain": "content",
+                    "chunk_type": "heading",
+                    "name": "Boosted",
+                    "language": "md",
+                    "content": "Boosted chunk content.",
+                },
+            ],
+        )
+        cid = chunk_ids[0]
+        for _ in range(10):
+            store.log_interaction(cid, "read", "test")
+
+        results = [self._make_result(cid, 0.5)]
+        boosted = search._apply_interaction_boost(results, "test")
+        assert boosted[0].score == pytest.approx(0.6, abs=1e-6)
+
+    def test_half_boost_with_5_interactions(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+
+        chunk_ids = store.insert_chunks(
+            "test",
+            [
+                {
+                    "file_path": "half.md",
+                    "chunk_domain": "content",
+                    "chunk_type": "heading",
+                    "name": "Half",
+                    "language": "md",
+                    "content": "Half boost chunk.",
+                },
+            ],
+        )
+        cid = chunk_ids[0]
+        for _ in range(5):
+            store.log_interaction(cid, "edit", "test")
+
+        results = [self._make_result(cid, 0.5)]
+        boosted = search._apply_interaction_boost(results, "test")
+        assert boosted[0].score == pytest.approx(0.55, abs=1e-6)
+
+    def test_no_boost_with_zero_interactions(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+
+        chunk_ids = store.insert_chunks(
+            "test",
+            [
+                {
+                    "file_path": "zero.md",
+                    "chunk_domain": "content",
+                    "chunk_type": "heading",
+                    "name": "Zero",
+                    "language": "md",
+                    "content": "No interactions chunk.",
+                },
+            ],
+        )
+        cid = chunk_ids[0]
+
+        results = [self._make_result(cid, 0.5)]
+        boosted = search._apply_interaction_boost(results, "test")
+        assert boosted[0].score == pytest.approx(0.5, abs=1e-6)
+
+    def test_search_hit_does_not_affect_boost(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+
+        chunk_ids = store.insert_chunks(
+            "test",
+            [
+                {
+                    "file_path": "nohit.md",
+                    "chunk_domain": "content",
+                    "chunk_type": "heading",
+                    "name": "NoHit",
+                    "language": "md",
+                    "content": "Search hit only chunk.",
+                },
+            ],
+        )
+        cid = chunk_ids[0]
+        for _ in range(10):
+            store.log_interaction(cid, "search_hit", "search")
+
+        results = [self._make_result(cid, 0.5)]
+        boosted = search._apply_interaction_boost(results, "test")
+        assert boosted[0].score == pytest.approx(0.5, abs=1e-6)
+
+    def test_boost_resorts_results(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+
+        chunks_data = [
+            {
+                "file_path": "high.md",
+                "chunk_domain": "content",
+                "chunk_type": "heading",
+                "name": "High",
+                "language": "md",
+                "content": "Originally higher scored.",
+            },
+            {
+                "file_path": "low.md",
+                "chunk_domain": "content",
+                "chunk_type": "heading",
+                "name": "Low",
+                "language": "md",
+                "content": "Originally lower scored but many reads.",
+            },
+        ]
+        chunk_ids = store.insert_chunks("test", chunks_data)
+        high_id, low_id = chunk_ids
+
+        for _ in range(10):
+            store.log_interaction(low_id, "read", "test")
+
+        results = [
+            self._make_result(high_id, 0.5),
+            self._make_result(low_id, 0.45),
+        ]
+        boosted = search._apply_interaction_boost(results, "test")
+        assert boosted[0].chunk_id == low_id
+        assert boosted[1].chunk_id == high_id
 
 
 class TestRRFMerge:
