@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess as _subprocess
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
@@ -132,6 +131,7 @@ def create_server() -> FastMCP:
         if not query or not query.strip():
             return "Empty query."
 
+        limit = max(1, min(limit, 50))
         project_id = project or _default_project()
         searcher = _get_search()
         lang = language or None
@@ -374,11 +374,12 @@ def create_server() -> FastMCP:
             query: Optional search query to find relevant sections in large files
             project: Project ID (default: auto-detect from file path)
         """
-        p = Path(file_path)
+        p = Path(file_path).resolve()
+        file_path = str(p)
         if not p.is_file():
             return f"Error: file not found: {file_path}"
 
-        # Resolve project
+        # Resolve project and restrict to registered paths
         project_id = None
         rel_path = None
         if project:
@@ -393,6 +394,9 @@ def create_server() -> FastMCP:
             match = _find_project_for_path(file_path)
             if match:
                 project_id, _, rel_path = match
+
+        if not project_id:
+            return "Error: file is not within a registered project."
 
         # Check if file is indexed and get line count
         store = _get_store()
@@ -456,47 +460,6 @@ def create_server() -> FastMCP:
         return "\n".join(parts)
 
     @server.tool()
-    async def execute(command: str, cwd: str | None = None, timeout: int = 30) -> str:
-        """Execute a shell command and return output.
-
-        Captures stdout and stderr. If output exceeds 100 lines, truncates with summary.
-        Use this instead of Bash for commands that produce large output.
-
-        Args:
-            command: Shell command to execute
-            cwd: Working directory (default: current directory)
-            timeout: Timeout in seconds (max 120, default 30)
-        """
-        timeout = min(timeout, 120)
-
-        try:
-            result = _subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=cwd,
-            )
-        except _subprocess.TimeoutExpired:
-            return f"Command timed out after {timeout}s."
-        except Exception as e:
-            return f"Error: {e}"
-
-        output = result.stdout
-        if result.returncode != 0 and result.stderr:
-            output += f"\n--- stderr (exit code {result.returncode}) ---\n{result.stderr}"
-        elif result.stderr:
-            output += f"\n--- stderr ---\n{result.stderr}"
-
-        lines = output.split("\n")
-        if len(lines) <= 100:
-            return output
-
-        truncated = "\n".join(lines[:100])
-        return f"{truncated}\n\n... {len(lines) - 100} more lines truncated."
-
-    @server.tool()
     async def fetch_and_index(url: str, project: str | None = None) -> str:
         """Fetch URL content, convert to text, and index for searching.
 
@@ -507,6 +470,11 @@ def create_server() -> FastMCP:
             project: Project ID to store under (default: derived from URL domain)
         """
         from dnomia_knowledge.chunker.md_chunker import MdChunker
+
+        # Validate URL scheme
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return f"Error: only http/https URLs supported, got '{parsed.scheme or 'none'}'."
 
         # Fetch URL
         try:

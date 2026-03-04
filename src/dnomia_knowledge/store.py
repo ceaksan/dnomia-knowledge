@@ -255,26 +255,20 @@ class Store:
 
     def get_project_stats(self, project_id: str) -> dict:
         conn = self._connect()
-        total = conn.execute(
-            "SELECT COUNT(*) FROM chunks WHERE project_id = ?", (project_id,)
-        ).fetchone()[0]
-        content = conn.execute(
-            "SELECT COUNT(*) FROM chunks WHERE project_id = ? AND chunk_domain = 'content'",
+        row = conn.execute(
+            """SELECT
+                   COUNT(*) as total,
+                   SUM(CASE WHEN chunk_domain = 'content' THEN 1 ELSE 0 END) as content,
+                   SUM(CASE WHEN chunk_domain = 'code' THEN 1 ELSE 0 END) as code,
+                   COUNT(DISTINCT file_path) as files
+               FROM chunks WHERE project_id = ?""",
             (project_id,),
-        ).fetchone()[0]
-        code = conn.execute(
-            "SELECT COUNT(*) FROM chunks WHERE project_id = ? AND chunk_domain = 'code'",
-            (project_id,),
-        ).fetchone()[0]
-        files = conn.execute(
-            "SELECT COUNT(DISTINCT file_path) FROM chunks WHERE project_id = ?",
-            (project_id,),
-        ).fetchone()[0]
+        ).fetchone()
         return {
-            "total_chunks": total,
-            "content_chunks": content,
-            "code_chunks": code,
-            "total_files": files,
+            "total_chunks": row[0] or 0,
+            "content_chunks": row[1] or 0,
+            "code_chunks": row[2] or 0,
+            "total_files": row[3] or 0,
         }
 
     # -- File Index --
@@ -519,6 +513,18 @@ class Store:
         )
         conn.commit()
 
+    def batch_update_chunk_metadata(self, updates: list[tuple[int, dict]]) -> None:
+        """Batch JSON merge metadata into multiple chunks in a single transaction."""
+        if not updates:
+            return
+        conn = self._connect()
+        for chunk_id, meta_updates in updates:
+            conn.execute(
+                "UPDATE chunks SET metadata = json_patch(COALESCE(metadata, '{}'), ?) WHERE id = ?",
+                (json.dumps(meta_updates, ensure_ascii=False, default=str), chunk_id),
+            )
+        conn.commit()
+
     # -- Chunk Interactions --
 
     def log_interaction(self, chunk_id: int, interaction: str, source_tool: str) -> None:
@@ -527,6 +533,17 @@ class Store:
         conn.execute(
             "INSERT INTO chunk_interactions (chunk_id, interaction, source_tool) VALUES (?, ?, ?)",
             (chunk_id, interaction, source_tool),
+        )
+        conn.commit()
+
+    def batch_log_interactions(self, interactions: list[tuple[int, str, str]]) -> None:
+        """Batch log interactions in a single transaction."""
+        if not interactions:
+            return
+        conn = self._connect()
+        conn.executemany(
+            "INSERT INTO chunk_interactions (chunk_id, interaction, source_tool) VALUES (?, ?, ?)",
+            interactions,
         )
         conn.commit()
 
@@ -544,10 +561,12 @@ class Store:
         placeholders = ",".join("?" for _ in chunk_ids)
         params: list = list(chunk_ids)
 
+        days_param = f"-{int(days)} days"
         where = [
             f"ci.chunk_id IN ({placeholders})",
-            f"ci.timestamp >= datetime('now', '-{days} days')",
+            "ci.timestamp >= datetime('now', ?)",
         ]
+        params.append(days_param)
 
         if interactions:
             i_ph = ",".join("?" for _ in interactions)
@@ -575,7 +594,8 @@ class Store:
         """Delete interactions older than N days."""
         conn = self._connect()
         cursor = conn.execute(
-            f"DELETE FROM chunk_interactions WHERE timestamp < datetime('now', '-{days} days')",
+            "DELETE FROM chunk_interactions WHERE timestamp < datetime('now', ?)",
+            (f"-{int(days)} days",),
         )
         conn.commit()
         return cursor.rowcount
@@ -618,7 +638,8 @@ class Store:
         """Delete search logs older than N days."""
         conn = self._connect()
         cursor = conn.execute(
-            f"DELETE FROM search_log WHERE timestamp < datetime('now', '-{days} days')",
+            "DELETE FROM search_log WHERE timestamp < datetime('now', ?)",
+            (f"-{int(days)} days",),
         )
         conn.commit()
         return cursor.rowcount

@@ -124,8 +124,7 @@ class HybridSearch:
         try:
             chunk_ids = [r.chunk_id for r in results]
             self._store.log_search(query, project_id, domain, chunk_ids, len(results))
-            for cid in chunk_ids:
-                self._store.log_interaction(cid, "search_hit", "search")
+            self._store.batch_log_interactions([(cid, "search_hit", "search") for cid in chunk_ids])
         except Exception:
             logger.debug("Failed to log search results", exc_info=True)
 
@@ -340,34 +339,29 @@ class HybridSearch:
             return []
 
         if len(all_results) == 1:
-            results = all_results[0][:limit]
-            results = self._apply_interaction_boost(results, project_id)
-            self._log_search_results(query, project_id, domain, results)
-            return results
+            return all_results[0][:limit]
 
-        merged = _rrf_merge_multi(all_results, k=60, limit=limit)
-        merged = self._apply_interaction_boost(merged, project_id)
-        self._log_search_results(query, project_id, domain, merged)
-        return merged
+        return _rrf_merge_multi(all_results, k=60, limit=limit)
 
     def _row_to_result(self, row) -> SearchResult:
-        content = row["content"] if "content" in row.keys() else ""
-        snippet_lines = content.split("\n")[:10]
-        snippet = "\n".join(snippet_lines)
-        if len(content.split("\n")) > 10:
+        keys = set(row.keys())
+        content = row["content"] if "content" in keys else ""
+        all_lines = content.split("\n")
+        snippet = "\n".join(all_lines[:10])
+        if len(all_lines) > 10:
             snippet += "\n..."
 
         return SearchResult(
-            chunk_id=row["id"] if "id" in row.keys() else row[0],
-            project_id=row["project_id"] if "project_id" in row.keys() else "",
-            file_path=row["file_path"] if "file_path" in row.keys() else "",
-            chunk_domain=row["chunk_domain"] if "chunk_domain" in row.keys() else "",
-            chunk_type=row["chunk_type"] if "chunk_type" in row.keys() else "",
-            name=row["name"] if "name" in row.keys() else None,
-            language=row["language"] if "language" in row.keys() else None,
-            start_line=row["start_line"] if "start_line" in row.keys() else 0,
-            end_line=row["end_line"] if "end_line" in row.keys() else 0,
-            score=row["score"] if "score" in row.keys() else 0.0,
+            chunk_id=row["id"] if "id" in keys else row[0],
+            project_id=row["project_id"] if "project_id" in keys else "",
+            file_path=row["file_path"] if "file_path" in keys else "",
+            chunk_domain=row["chunk_domain"] if "chunk_domain" in keys else "",
+            chunk_type=row["chunk_type"] if "chunk_type" in keys else "",
+            name=row["name"] if "name" in keys else None,
+            language=row["language"] if "language" in keys else None,
+            start_line=row["start_line"] if "start_line" in keys else 0,
+            end_line=row["end_line"] if "end_line" in keys else 0,
+            score=row["score"] if "score" in keys else 0.0,
             snippet=snippet,
         )
 

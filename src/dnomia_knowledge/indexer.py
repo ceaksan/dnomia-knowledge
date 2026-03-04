@@ -96,6 +96,13 @@ class Indexer:
         self.store = store
         self.embedder = embedder
         self._md_chunker = MdChunker()
+        self._ast_chunkers: dict[int, AstChunker] = {}
+
+    def _get_ast_chunker(self, max_lines: int) -> AstChunker:
+        """Return a cached AstChunker for the given max_lines."""
+        if max_lines not in self._ast_chunkers:
+            self._ast_chunkers[max_lines] = AstChunker(max_chunk_lines=max_lines, overlap_lines=2)
+        return self._ast_chunkers[max_lines]
 
     def index_file(
         self,
@@ -103,6 +110,8 @@ class Indexer:
         project_path: str,
         file_path: str,
         config: ProjectConfig | None = None,
+        file_hash: str | None = None,
+        _ensure_project: bool = True,
     ) -> tuple[int, list[int]]:
         """Index a single file. Returns (chunk_count, chunk_ids)."""
         content = self._read_file(file_path)
@@ -120,8 +129,7 @@ class Indexer:
             domain = "content"
         elif ext in code_exts:
             max_lines = config.code.max_chunk_lines if config else 50
-            ast_chunker = AstChunker(max_chunk_lines=max_lines, overlap_lines=2)
-            chunks = ast_chunker.chunk(file_path, content)
+            chunks = self._get_ast_chunker(max_lines).chunk(file_path, content)
             domain = "code"
         else:
             return 0, []
@@ -130,14 +138,15 @@ class Indexer:
             return 0, []
 
         # Ensure project exists (needed when index_file is called directly)
-        project_type = config.type if config else "content"
-        graph_enabled = config.graph.enabled if config else False
-        self.store.register_project(
-            project_id,
-            project_path,
-            project_type,
-            graph_enabled=graph_enabled,
-        )
+        if _ensure_project:
+            project_type = config.type if config else "content"
+            graph_enabled = config.graph.enabled if config else False
+            self.store.register_project(
+                project_id,
+                project_path,
+                project_type,
+                graph_enabled=graph_enabled,
+            )
 
         # Delete old chunks for this file
         self.store.delete_file_chunks(project_id, rel_path)
@@ -167,7 +176,8 @@ class Indexer:
         self.store.insert_chunk_vectors(chunk_ids, vectors)
 
         # Update file index
-        file_hash = _compute_file_hash(file_path)
+        if file_hash is None:
+            file_hash = _compute_file_hash(file_path)
         self.store.upsert_file_index(project_id, rel_path, file_hash, len(chunk_ids))
 
         return len(chunk_ids), chunk_ids
@@ -250,7 +260,7 @@ class Indexer:
 
             files_to_index = changed
         else:
-            files_to_index = all_files
+            files_to_index = [(fp, None) for fp in all_files]
 
         # Index changed files
         total_chunks = 0
@@ -259,10 +269,17 @@ class Indexer:
         all_new_chunk_ids: list[int] = []
         file_chunk_map: dict[str, list[int]] = {}
 
-        for file_path in files_to_index:
+        for file_path, file_hash in files_to_index:
             try:
                 ext = Path(file_path).suffix.lower()
-                count, chunk_ids = self.index_file(project_id, project_path, file_path, config)
+                count, chunk_ids = self.index_file(
+                    project_id,
+                    project_path,
+                    file_path,
+                    config,
+                    file_hash=file_hash,
+                    _ensure_project=False,
+                )
                 if ext in content_exts:
                     content_chunks += count
                 else:
@@ -446,61 +463,22 @@ class Indexer:
 
         return False
 
-    def _raw_chunk(
-        self,
-        file_path: str,
-        content: str,
-        config: ProjectConfig | None = None,
-    ) -> list[Chunk]:
-        """Simple raw text chunking for code files. Sprint 3 replaces with AST."""
-        max_lines = config.code.max_chunk_lines if config else 50
-        ext = Path(file_path).suffix.lstrip(".")
-        lines = content.split("\n")
-
-        if len(lines) <= max_lines:
-            return [
-                Chunk(
-                    content=content,
-                    chunk_type="block",
-                    name=Path(file_path).stem,
-                    language=ext,
-                    start_line=1,
-                    end_line=len(lines),
-                )
-            ]
-
-        # Split into blocks
-        chunks = []
-        for i in range(0, len(lines), max_lines):
-            block_lines = lines[i : i + max_lines]
-            chunks.append(
-                Chunk(
-                    content="\n".join(block_lines),
-                    chunk_type="block",
-                    name=f"{Path(file_path).stem}:{i + 1}",
-                    language=ext,
-                    start_line=i + 1,
-                    end_line=min(i + max_lines, len(lines)),
-                )
-            )
-        return chunks
-
     def _detect_changes(
         self,
         all_files: list[str],
         stored_hashes: dict[str, str],
         project_path: str,
-    ) -> tuple[list[str], list[str]]:
-        """Returns (changed_files, deleted_rel_paths)."""
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Returns (changed_files_with_hash, deleted_rel_paths)."""
         current_rel_paths = set()
-        changed = []
+        changed: list[tuple[str, str]] = []
 
         for fp in all_files:
             rel = os.path.relpath(fp, project_path)
             current_rel_paths.add(rel)
             current_hash = _compute_file_hash(fp)
             if rel not in stored_hashes or stored_hashes[rel] != current_hash:
-                changed.append(fp)
+                changed.append((fp, current_hash))
 
         deleted = [rp for rp in stored_hashes if rp not in current_rel_paths]
         return changed, deleted

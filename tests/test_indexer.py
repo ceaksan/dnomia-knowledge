@@ -201,30 +201,6 @@ class TestIndexerWithConfig:
         assert result.total_files == 1  # only small.md
         store.close()
 
-    def test_raw_chunk_small_file(self, db_path):
-        """Code file smaller than max_chunk_lines produces 1 chunk."""
-        store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
-
-        chunks = indexer._raw_chunk("test.ts", "const x = 1;\n", None)
-        assert len(chunks) == 1
-        assert chunks[0].chunk_type == "block"
-        assert chunks[0].language == "ts"
-        store.close()
-
-    def test_raw_chunk_large_file_splits(self, db_path):
-        """Code file larger than max_chunk_lines produces multiple chunks."""
-        store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
-
-        content = "\n".join(f"line {i}" for i in range(120))
-        chunks = indexer._raw_chunk("test.py", content, None)
-        assert len(chunks) > 1
-        assert all(c.language == "py" for c in chunks)
-        store.close()
-
 
 class TestAstChunkerIntegration:
     """Test AST chunker integration through the indexer pipeline."""

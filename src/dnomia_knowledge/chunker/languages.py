@@ -42,6 +42,7 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".zsh": "bash",
     ".vue": "vue",
     ".svelte": "svelte",
+    ".astro": "astro",
     ".sql": "sql",
     ".toml": "toml",
     ".yaml": "yaml",
@@ -260,14 +261,13 @@ def detect_language(file_path: str) -> str | None:
     """Detect language from file extension. Returns None if unknown."""
     from pathlib import Path
 
-    suffix = Path(file_path).suffix.lower()
-    # Special case for Dockerfile
-    name = Path(file_path).name.lower()
+    p = Path(file_path)
+    name = p.name.lower()
     if name == "dockerfile" or name.startswith("dockerfile."):
         return "dockerfile"
     if name == "makefile" or name == "gnumakefile":
         return "make"
-    return EXTENSION_TO_LANGUAGE.get(suffix)
+    return EXTENSION_TO_LANGUAGE.get(p.suffix.lower())
 
 
 def get_chunk_node_types(language: str) -> set[str]:

@@ -232,16 +232,20 @@ class GraphBuilder:
 
         pagerank = nx.pagerank(G_directed, alpha=0.85)
 
-        # Write results to chunk metadata
+        # Write results to chunk metadata (batched)
+        updates: list[tuple[int, dict]] = []
         for community_idx, community in enumerate(communities):
             for cid in community:
-                self.store.update_chunk_metadata(
-                    cid,
-                    {
-                        "community_id": community_idx,
-                        "pagerank": round(pagerank.get(cid, 0.0), 6),
-                    },
+                updates.append(
+                    (
+                        cid,
+                        {
+                            "community_id": community_idx,
+                            "pagerank": round(pagerank.get(cid, 0.0), 6),
+                        },
+                    )
                 )
+        self.store.batch_update_chunk_metadata(updates)
 
         return len(communities)
 

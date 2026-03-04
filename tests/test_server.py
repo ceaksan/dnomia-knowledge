@@ -19,49 +19,6 @@ def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-class TestExecuteTool:
-    """Tests for the execute MCP tool."""
-
-    def _get_execute(self):
-        """Get the execute tool function from a fresh server."""
-        server = create_server()
-        # Access the tool's implementation function via the server's tool manager
-        tool_map = {t.name: t for t in server._tool_manager._tools.values()}
-        return tool_map["execute"].fn
-
-    def test_execute_simple_command(self):
-        execute = self._get_execute()
-        result = _run(execute(command="echo hello"))
-        assert result == "hello\n"
-
-    def test_execute_stderr(self):
-        execute = self._get_execute()
-        result = _run(execute(command="echo err >&2"))
-        assert "--- stderr ---" in result
-        assert "err" in result
-
-    def test_execute_timeout(self):
-        execute = self._get_execute()
-        result = _run(execute(command="sleep 10", timeout=1))
-        assert "timed out" in result
-        assert "1s" in result
-
-    def test_execute_large_output_truncated(self):
-        execute = self._get_execute()
-        result = _run(execute(command="seq 1 500"))
-        assert "more lines truncated" in result
-        lines = result.split("\n")
-        # First 100 lines + empty line + truncation message
-        assert lines[0] == "1"
-        assert lines[99] == "100"
-
-    def test_execute_cwd(self):
-        execute = self._get_execute()
-        result = _run(execute(command="pwd", cwd="/tmp"))
-        # /tmp may resolve to /private/tmp on macOS
-        assert "/tmp" in result
-
-
 def _make_mock_response(body: bytes, content_type: str = "text/html", charset: str = "utf-8"):
     """Create a mock urllib response with proper headers."""
     mock_resp = MagicMock()
