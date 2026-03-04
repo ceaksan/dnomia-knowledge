@@ -1,8 +1,11 @@
-"""Integration tests for Sprint 2 and Sprint 3."""
+"""Integration tests for Sprint 2, Sprint 3, and Sprint 4."""
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -425,5 +428,260 @@ extensions = [".md"]
         regular_ids = {r.chunk_id for r in regular}
         cross_ids = {r.chunk_id for r in cross}
         assert regular_ids == cross_ids
+
+        store.close()
+
+
+class TestSprint4Integration:
+    """Sprint 4: interactions, search logging, hook script, GC."""
+
+    @pytest.fixture
+    def indexed_project(self, tmp_dir, db_path):
+        """Index a project with content + code files, return (store, project_id, tmp_dir)."""
+        toml_content = b"""
+[project]
+name = "s4-test"
+type = "saas"
+
+[content]
+paths = ["docs/"]
+extensions = [".md"]
+
+[code]
+preset = "python"
+paths = ["src/"]
+"""
+        (tmp_dir / ".knowledge.toml").write_bytes(toml_content)
+        (tmp_dir / "docs").mkdir()
+        (tmp_dir / "docs" / "guide.md").write_text(
+            "## Caching Strategy\n\n"
+            "Redis caching improves application performance significantly. "
+            "Cache invalidation must be handled carefully to avoid stale data. "
+            "Use TTL-based expiration for session data and event-driven "
+            "invalidation for mutable resources. Always monitor cache hit rates "
+            "to ensure the caching layer is effective.\n"
+        )
+        (tmp_dir / "src").mkdir()
+        (tmp_dir / "src" / "cache.py").write_text(
+            "def get_cached(key: str) -> str | None:\n"
+            '    """Get value from cache by key."""\n'
+            "    return None\n"
+            "\n\n"
+            "def set_cached(key: str, value: str, ttl: int = 300) -> None:\n"
+            '    """Set value in cache with TTL."""\n'
+            "    pass\n"
+        )
+
+        config = load_config(tmp_dir)
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+        indexer.index_directory("s4-test", str(tmp_dir), config=config)
+
+        yield store, "s4-test", tmp_dir, embedder
+        store.close()
+
+    def test_index_search_logs_entry(self, indexed_project):
+        """Index project, search, verify search_log entry exists."""
+        store, project_id, _, embedder = indexed_project
+        search = HybridSearch(store, embedder)
+
+        results = search.search("caching strategy", project_id=project_id)
+        assert len(results) > 0
+
+        logs = store.get_search_log(project_id=project_id)
+        assert len(logs) >= 1
+
+        matching = [log for log in logs if log["query"] == "caching strategy"]
+        assert len(matching) == 1
+        assert matching[0]["project_id"] == project_id
+        assert matching[0]["result_count"] > 0
+
+        result_ids = json.loads(matching[0]["result_chunk_ids"])
+        assert len(result_ids) > 0
+
+    def test_interaction_boost_ranks_higher(self, db_path):
+        """Log interactions for one chunk, verify it scores higher after boost."""
+        store = Store(db_path)
+        embedder = Embedder()
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td)
+            toml = b"""
+[project]
+name = "boost-test"
+type = "content"
+
+[content]
+paths = ["docs/"]
+extensions = [".md"]
+"""
+            (path / ".knowledge.toml").write_bytes(toml)
+            (path / "docs").mkdir()
+            # Two docs about similar topic so both appear in results
+            (path / "docs" / "redis.md").write_text(
+                "## Redis Caching\n\n"
+                "Redis provides in-memory data structure store used as database "
+                "and cache. Redis supports various data structures including "
+                "strings, hashes, lists, sets, and sorted sets. Performance of "
+                "Redis caching depends on proper key design and eviction policy.\n"
+            )
+            (path / "docs" / "memcached.md").write_text(
+                "## Memcached Caching\n\n"
+                "Memcached is a distributed memory caching system designed for "
+                "speed and simplicity. It caches data and objects in RAM to "
+                "reduce database load. Memcached caching is widely used for "
+                "session storage and frequently accessed data retrieval.\n"
+            )
+
+            config = load_config(path)
+            indexer = Indexer(store, embedder)
+            indexer.index_directory("boost-test", str(path), config=config)
+
+        search = HybridSearch(store, embedder)
+
+        # Search before any interactions to get baseline
+        baseline = search.search("caching system performance", project_id="boost-test")
+        assert len(baseline) >= 2
+
+        # Find the chunk_id for redis.md
+        redis_chunk = None
+        memcached_chunk = None
+        for r in baseline:
+            if "redis" in r.file_path.lower():
+                redis_chunk = r
+            elif "memcached" in r.file_path.lower():
+                memcached_chunk = r
+
+        assert redis_chunk is not None
+        assert memcached_chunk is not None
+
+        # Log 10 read interactions for redis chunk
+        for _ in range(10):
+            store.log_interaction(redis_chunk.chunk_id, "read", "test")
+
+        # Search again - redis chunk should have boost applied
+        boosted = search.search("caching system performance", project_id="boost-test")
+        assert len(boosted) >= 2
+
+        # Find redis result in boosted search
+        boosted_redis = None
+        for r in boosted:
+            if r.chunk_id == redis_chunk.chunk_id:
+                boosted_redis = r
+                break
+
+        assert boosted_redis is not None
+
+        # Verify the interaction counts exist for this chunk
+        counts = store.get_interaction_counts(
+            [redis_chunk.chunk_id], days=30, interactions=["read"]
+        )
+        assert counts.get(redis_chunk.chunk_id, 0) >= 10
+
+        # Verify redis chunk has a higher score than memcached in boosted results
+        boosted_memcached = None
+        for r in boosted:
+            if r.chunk_id == memcached_chunk.chunk_id:
+                boosted_memcached = r
+                break
+
+        if boosted_memcached is not None:
+            assert boosted_redis.score >= boosted_memcached.score
+
+        store.close()
+
+    def test_post_tool_use_hook_logs_interactions(self, db_path):
+        """Run hook script as subprocess, verify interactions logged in DB."""
+        store = Store(db_path)
+
+        with tempfile.TemporaryDirectory() as td:
+            project_path = td
+            store.register_project("hook-test", project_path, "content")
+
+            # Insert a chunk for a file within the project
+            file_rel = "docs/api.md"
+            ids = store.insert_chunks(
+                "hook-test",
+                [{"file_path": file_rel, "content": "API endpoint documentation."}],
+            )
+            assert len(ids) == 1
+
+            # Build absolute file path that the hook will receive
+            abs_file = os.path.join(project_path, file_rel)
+
+            # Close store before subprocess uses the DB
+            store.close()
+
+            hook_input = json.dumps(
+                {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": abs_file},
+                }
+            )
+
+            result = subprocess.run(
+                [sys.executable, "-m", "dnomia_knowledge.hooks.post_tool_use"],
+                input=hook_input,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "DNOMIA_KNOWLEDGE_DB": db_path},
+            )
+
+            assert result.returncode == 0
+
+            # Reopen store and verify interactions
+            store2 = Store(db_path)
+            counts = store2.get_interaction_counts(ids, days=1, interactions=["read"])
+            assert counts.get(ids[0], 0) == 1
+            store2.close()
+
+    def test_gc_deletes_old_interactions_and_search_logs(self, db_path):
+        """Insert old interactions/search_logs, GC removes them."""
+        store = Store(db_path)
+        store.register_project("gc-test", "/tmp/gc", "content")
+
+        ids = store.insert_chunks(
+            "gc-test",
+            [{"file_path": "a.md", "content": "GC test chunk."}],
+        )
+        chunk_id = ids[0]
+
+        # Log interactions and search entries
+        store.log_interaction(chunk_id, "read", "test")
+        store.log_interaction(chunk_id, "edit", "test")
+        store.log_search("test query", "gc-test", "all", [chunk_id], 1)
+
+        # Verify they exist
+        counts_before = store.get_interaction_counts([chunk_id], days=1)
+        assert counts_before.get(chunk_id, 0) == 2
+        logs_before = store.get_search_log(project_id="gc-test")
+        assert len(logs_before) == 1
+
+        # Manually backdate timestamps to 100 days ago via raw SQL
+        conn = store._connect()
+        conn.execute(
+            "UPDATE chunk_interactions SET timestamp = datetime('now', '-100 days') "
+            "WHERE chunk_id = ?",
+            (chunk_id,),
+        )
+        conn.execute(
+            "UPDATE search_log SET timestamp = datetime('now', '-100 days') "
+            "WHERE project_id = 'gc-test'",
+        )
+        conn.commit()
+
+        # GC with 90-day threshold should remove them
+        deleted_interactions = store.delete_old_interactions(90)
+        assert deleted_interactions == 2
+
+        deleted_logs = store.delete_old_search_logs(90)
+        assert deleted_logs == 1
+
+        # Verify they are gone
+        counts_after = store.get_interaction_counts([chunk_id], days=365)
+        assert counts_after.get(chunk_id, 0) == 0
+        logs_after = store.get_search_log(project_id="gc-test")
+        assert len(logs_after) == 0
 
         store.close()
