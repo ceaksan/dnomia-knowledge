@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.models import SearchResult
 from dnomia_knowledge.store import Store
+
+logger = logging.getLogger(__name__)
 
 
 def rrf_merge(
@@ -209,6 +212,39 @@ class HybridSearch:
         results.sort(key=lambda x: x.score, reverse=True)
         return results
 
+    def search_cross(
+        self,
+        query: str,
+        project_id: str,
+        related_projects: list[str],
+        domain: str = "all",
+        limit: int = 10,
+    ) -> list[SearchResult]:
+        """Search across primary project and related projects, merge with RRF."""
+        all_project_ids = [project_id] + [p for p in related_projects if p != project_id]
+
+        all_results: list[list[SearchResult]] = []
+        per_project_limit = max(limit, 10)
+
+        for pid in all_project_ids:
+            proj = self._store.get_project(pid)
+            if not proj:
+                logger.warning("Related project '%s' not found, skipping.", pid)
+                continue
+            results = self.search(query, project_id=pid, domain=domain, limit=per_project_limit)
+            if results:
+                # Normalize scores within each project
+                _normalize_scores(results)
+                all_results.append(results)
+
+        if not all_results:
+            return []
+
+        if len(all_results) == 1:
+            return all_results[0][:limit]
+
+        return _rrf_merge_multi(all_results, k=60, limit=limit)
+
     def _row_to_result(self, row) -> SearchResult:
         content = row["content"] if "content" in row.keys() else ""
         snippet_lines = content.split("\n")[:10]
@@ -229,3 +265,42 @@ class HybridSearch:
             score=row["score"] if "score" in row.keys() else 0.0,
             snippet=snippet,
         )
+
+
+def _normalize_scores(results: list[SearchResult]) -> None:
+    """Min-max normalize scores in-place."""
+    if len(results) <= 1:
+        return
+    scores = [r.score for r in results]
+    min_s, max_s = min(scores), max(scores)
+    if max_s == min_s:
+        for r in results:
+            r.score = 1.0
+        return
+    for r in results:
+        r.score = round((r.score - min_s) / (max_s - min_s), 6)
+
+
+def _rrf_merge_multi(
+    result_lists: list[list[SearchResult]],
+    k: int = 60,
+    limit: int = 10,
+) -> list[SearchResult]:
+    """Multi-list RRF merge."""
+    scores: dict[int, float] = {}
+    result_map: dict[int, SearchResult] = {}
+
+    for results in result_lists:
+        for rank, r in enumerate(results):
+            scores[r.chunk_id] = scores.get(r.chunk_id, 0) + 1.0 / (k + rank + 1)
+            if r.chunk_id not in result_map:
+                result_map[r.chunk_id] = r
+
+    sorted_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)[:limit]
+
+    merged = []
+    for chunk_id in sorted_ids:
+        r = result_map[chunk_id]
+        r.score = round(scores[chunk_id], 6)
+        merged.append(r)
+    return merged

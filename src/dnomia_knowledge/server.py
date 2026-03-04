@@ -81,7 +81,27 @@ def create_server() -> FastMCP:
 
         project_id = project or _default_project()
         searcher = _get_search()
-        results = searcher.search(query, project_id=project_id, domain=domain, limit=limit)
+
+        if cross and project_id:
+            from dnomia_knowledge.registry import load_config
+
+            config = None
+            proj = _get_store().get_project(project_id)
+            if proj:
+                config = load_config(proj["path"])
+            related = config.links.related if config else []
+            if related:
+                results = searcher.search_cross(
+                    query,
+                    project_id=project_id,
+                    related_projects=related,
+                    domain=domain,
+                    limit=limit,
+                )
+            else:
+                results = searcher.search(query, project_id=project_id, domain=domain, limit=limit)
+        else:
+            results = searcher.search(query, project_id=project_id, domain=domain, limit=limit)
 
         if not results:
             return "No results found."
@@ -193,6 +213,75 @@ def create_server() -> FastMCP:
                 f"{stats['total_files']} files"
             )
         return "\n".join(lines)
+
+    @server.tool()
+    async def graph_query(
+        chunk_id: int | None = None,
+        project: str | None = None,
+        mode: str = "neighbors",
+        depth: int = 1,
+    ) -> str:
+        """Query the knowledge graph.
+
+        Args:
+            chunk_id: Chunk ID to start traversal from (required for neighbors mode)
+            project: Project ID (required for communities mode)
+            mode: "neighbors" for BFS traversal, "communities" for Louvain groups
+            depth: BFS depth for neighbors mode (1-3)
+        """
+        store = _get_store()
+
+        if mode == "neighbors":
+            if chunk_id is None:
+                return "Error: chunk_id required for neighbors mode."
+            depth = max(1, min(depth, 3))
+            neighbors = store.get_neighbors(chunk_id, depth=depth)
+            if not neighbors:
+                return f"No neighbors found for chunk {chunk_id} at depth {depth}."
+            lines = [f"Neighbors of chunk {chunk_id} (depth={depth}):"]
+            for n in neighbors:
+                line = f"  [{n['chunk_id']}] {n['file_path']}"
+                if n["name"]:
+                    line += f" ({n['chunk_type']}: {n['name']})"
+                line += f" via {n['edge_type']} (w={n['weight']:.2f}, d={n['depth']})"
+                lines.append(line)
+            return "\n".join(lines)
+
+        elif mode == "communities":
+            project_id = project or _default_project()
+            if not project_id:
+                return "Error: project required for communities mode."
+            import json as _json
+
+            conn = store._connect()
+            rows = conn.execute(
+                "SELECT id, name, file_path, metadata FROM chunks WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+            communities: dict[str, list[str]] = {}
+            for r in rows:
+                meta = _json.loads(r["metadata"]) if r["metadata"] else {}
+                cid = str(meta.get("community_id", "unassigned"))
+                label = f"[{r['id']}] {r['file_path']}"
+                if r["name"]:
+                    label += f" ({r['name']})"
+                communities.setdefault(cid, []).append(label)
+
+            if not communities or (len(communities) == 1 and "unassigned" in communities):
+                return "No communities found. Run rebuild-graph first."
+
+            lines = [f"Communities for {project_id}:"]
+            for cid, members in sorted(communities.items()):
+                if cid == "unassigned":
+                    continue
+                lines.append(f"\n  Community {cid} ({len(members)} chunks):")
+                for m in members[:10]:
+                    lines.append(f"    {m}")
+                if len(members) > 10:
+                    lines.append(f"    ... and {len(members) - 10} more")
+            return "\n".join(lines)
+
+        return f"Unknown mode: {mode}. Use 'neighbors' or 'communities'."
 
     return server
 
