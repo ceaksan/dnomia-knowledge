@@ -94,6 +94,44 @@ class TestHybridSearch:
         assert results == []
 
 
+class TestSearchLogging:
+    def test_search_creates_search_log_entry(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+        search.search("JWT authentication", project_id="test")
+
+        logs = store.get_search_log(project_id="test")
+        assert len(logs) >= 1
+        assert logs[0]["query"] == "JWT authentication"
+        assert logs[0]["project_id"] == "test"
+
+    def test_search_logs_search_hit_interactions(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+        results = search.search("JWT authentication", project_id="test")
+        assert len(results) > 0
+
+        chunk_ids = [r.chunk_id for r in results]
+        counts = store.get_interaction_counts(chunk_ids, interactions=["search_hit"])
+        assert sum(counts.values()) > 0
+
+    def test_empty_search_no_log(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+        search.search("", project_id="test")
+
+        logs = store.get_search_log(project_id="test")
+        assert len(logs) == 0
+
+    def test_search_log_stores_result_count(self, populated_store):
+        store, embedder = populated_store
+        search = HybridSearch(store, embedder)
+        results = search.search("authentication", project_id="test")
+
+        logs = store.get_search_log(project_id="test")
+        assert logs[0]["result_count"] == len(results)
+
+
 class TestRRFMerge:
     def test_rrf_basic(self):
         from dnomia_knowledge.models import SearchResult

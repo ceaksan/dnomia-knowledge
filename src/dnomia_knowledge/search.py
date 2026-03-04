@@ -73,7 +73,25 @@ class HybridSearch:
             # Fallback: prefix match
             fts_results = self._search_fts_prefix(query, project_id, domain, fetch_limit)
 
-        return rrf_merge(fts_results, vec_results, k=60, limit=limit)
+        results = rrf_merge(fts_results, vec_results, k=60, limit=limit)
+        self._log_search_results(query, project_id, domain, results)
+        return results
+
+    def _log_search_results(
+        self,
+        query: str,
+        project_id: str | None,
+        domain: str,
+        results: list[SearchResult],
+    ) -> None:
+        """Log search query and mark result chunks as search_hit."""
+        try:
+            chunk_ids = [r.chunk_id for r in results]
+            self._store.log_search(query, project_id, domain, chunk_ids, len(results))
+            for cid in chunk_ids:
+                self._store.log_interaction(cid, "search_hit", "search")
+        except Exception:
+            logger.debug("Failed to log search results", exc_info=True)
 
     def _search_fts(
         self, query: str, project_id: str | None, domain: str, limit: int
@@ -241,9 +259,13 @@ class HybridSearch:
             return []
 
         if len(all_results) == 1:
-            return all_results[0][:limit]
+            results = all_results[0][:limit]
+            self._log_search_results(query, project_id, domain, results)
+            return results
 
-        return _rrf_merge_multi(all_results, k=60, limit=limit)
+        merged = _rrf_merge_multi(all_results, k=60, limit=limit)
+        self._log_search_results(query, project_id, domain, merged)
+        return merged
 
     def _row_to_result(self, row) -> SearchResult:
         content = row["content"] if "content" in row.keys() else ""
