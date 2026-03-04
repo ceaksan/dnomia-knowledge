@@ -320,6 +320,46 @@ def cmd_gc(args: argparse.Namespace) -> None:
     store.close()
 
 
+def cmd_rebuild_graph(args: argparse.Namespace) -> None:
+    """Rebuild knowledge graph for a project."""
+    from dnomia_knowledge.graph import GraphBuilder
+    from dnomia_knowledge.registry import GraphConfig, load_config
+    from dnomia_knowledge.store import Store
+
+    store = Store(_get_db_path())
+    proj = store.get_project(args.project_id)
+    if not proj:
+        console.print(f"[red]Project '{args.project_id}' not found.[/red]")
+        store.close()
+        sys.exit(1)
+
+    if not proj["graph_enabled"]:
+        console.print("[yellow]Graph is not enabled for this project.[/yellow]")
+        console.print("[dim]Set graph.enabled = true in .knowledge.toml and reindex.[/dim]")
+        store.close()
+        return
+
+    config = load_config(proj["path"])
+    graph_config = config.graph if config else GraphConfig(enabled=True)
+    builder = GraphBuilder(store, graph_config)
+
+    with console.status("[bold green]Rebuilding edges..."):
+        counts = builder.rebuild_all_edges(args.project_id)
+
+    console.print(f"\n[bold]{args.project_id}[/bold] graph rebuilt")
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    for edge_type, count in sorted(counts.items()):
+        table.add_row(f"{edge_type} edges", str(count))
+    console.print(table)
+
+    with console.status("[bold green]Running community detection..."):
+        n_communities = builder.run_community_detection(args.project_id)
+
+    console.print(f"Communities detected: {n_communities}")
+
+    store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnomia-knowledge",
@@ -358,6 +398,11 @@ def build_parser() -> argparse.ArgumentParser:
     # gc
     p_gc = subparsers.add_parser("gc", help="Clean up orphan data")
     p_gc.set_defaults(func=cmd_gc)
+
+    # rebuild-graph
+    p_graph = subparsers.add_parser("rebuild-graph", help="Rebuild knowledge graph")
+    p_graph.add_argument("project_id", help="Project ID")
+    p_graph.set_defaults(func=cmd_rebuild_graph)
 
     return parser
 

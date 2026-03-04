@@ -103,11 +103,11 @@ class Indexer:
         project_path: str,
         file_path: str,
         config: ProjectConfig | None = None,
-    ) -> int:
-        """Index a single file. Returns number of chunks created."""
+    ) -> tuple[int, list[int]]:
+        """Index a single file. Returns (chunk_count, chunk_ids)."""
         content = self._read_file(file_path)
         if not content:
-            return 0
+            return 0, []
 
         rel_path = os.path.relpath(file_path, project_path)
         ext = Path(file_path).suffix.lower()
@@ -124,10 +124,10 @@ class Indexer:
             chunks = ast_chunker.chunk(file_path, content)
             domain = "code"
         else:
-            return 0
+            return 0, []
 
         if not chunks:
-            return 0
+            return 0, []
 
         # Ensure project exists (needed when index_file is called directly)
         project_type = config.type if config else "content"
@@ -170,7 +170,7 @@ class Indexer:
         file_hash = _compute_file_hash(file_path)
         self.store.upsert_file_index(project_id, rel_path, file_hash, len(chunk_ids))
 
-        return len(chunk_ids)
+        return len(chunk_ids), chunk_ids
 
     def index_directory(
         self,
@@ -256,17 +256,36 @@ class Indexer:
         total_chunks = 0
         content_chunks = 0
         code_chunks = 0
+        all_new_chunk_ids: list[int] = []
+        file_chunk_map: dict[str, list[int]] = {}
+
         for file_path in files_to_index:
             try:
                 ext = Path(file_path).suffix.lower()
-                count = self.index_file(project_id, project_path, file_path, config)
+                count, chunk_ids = self.index_file(project_id, project_path, file_path, config)
                 if ext in content_exts:
                     content_chunks += count
                 else:
                     code_chunks += count
                 total_chunks += count
+                all_new_chunk_ids.extend(chunk_ids)
+                rel = os.path.relpath(file_path, project_path)
+                file_chunk_map[rel] = chunk_ids
             except Exception as e:
                 logger.warning("Failed to index %s: %s", file_path, e)
+
+        # Build graph edges if enabled
+        if graph_enabled and all_new_chunk_ids:
+            try:
+                from dnomia_knowledge.graph import GraphBuilder
+
+                graph_config = config.graph if config else None
+                builder = GraphBuilder(self.store, graph_config)
+                for rel_path, cids in file_chunk_map.items():
+                    builder.build_edges_for_file(project_id, rel_path, cids)
+                builder.build_semantic_edges(project_id, all_new_chunk_ids)
+            except Exception as e:
+                logger.warning("Graph building failed: %s", e)
 
         duration = time.time() - start_time
         return IndexResult(

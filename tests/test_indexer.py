@@ -25,12 +25,13 @@ def indexer(db_path):
 
 class TestIndexer:
     def test_index_single_file(self, indexer, sample_markdown_file):
-        result = indexer.index_file(
+        count, chunk_ids = indexer.index_file(
             project_id="test",
             project_path=str(sample_markdown_file.parent),
             file_path=str(sample_markdown_file),
         )
-        assert result > 0  # at least 1 chunk
+        assert count > 0
+        assert len(chunk_ids) == count
 
     def test_index_directory(self, indexer, tmp_dir, sample_markdown):
         # Create multiple markdown files
