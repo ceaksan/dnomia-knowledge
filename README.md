@@ -1,0 +1,126 @@
+# dnomia-knowledge
+
+Unified knowledge management MCP server. Indexes markdown and code files with hybrid search (FTS5 keyword + vector semantic).
+
+SQLite + sqlite-vec + FTS5 single DB. multilingual-e5-base embedding. Heading-based markdown chunking + Tree-sitter AST code chunking.
+
+## Installation
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+The `intfloat/multilingual-e5-base` model (~500MB) is automatically downloaded on first run.
+
+## MCP Configuration
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "dnomia-knowledge": {
+      "command": "/path/to/dnomia-knowledge/.venv/bin/python",
+      "args": ["-m", "dnomia_knowledge.server"],
+      "env": {
+        "DNOMIA_KNOWLEDGE_PROJECT": "my-project"
+      }
+    }
+  }
+}
+```
+
+Can also be added to a project's `.claude/settings.json` for project-level configuration.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DNOMIA_KNOWLEDGE_DB` | `~/.local/share/dnomia-knowledge/knowledge.db` | SQLite DB file path |
+| `DNOMIA_KNOWLEDGE_PROJECT` | (none) | Default project ID for search tool |
+
+## MCP Tools
+
+### search
+
+Hybrid semantic + keyword search.
+
+```
+search(query, domain="all", project=None, limit=10)
+```
+
+- `query`: Search text
+- `domain`: `"all"`, `"content"`, or `"code"`
+- `project`: Project ID. Falls back to `DNOMIA_KNOWLEDGE_PROJECT` env var if not specified
+- `limit`: Maximum number of results
+
+### index_project
+
+Index a project directory.
+
+```
+index_project(path, incremental=True)
+```
+
+- `path`: Project root directory (absolute path)
+- `incremental`: When `True`, only re-indexes changed files
+
+Project ID is derived from directory name (lowercase, spaces become hyphens).
+
+### project_info
+
+List registered projects and their statistics.
+
+```
+project_info(project=None)
+```
+
+- `project`: Specific project ID, or `None` for all projects
+
+## Usage (Python)
+
+```python
+from dnomia_knowledge.store import Store
+from dnomia_knowledge.embedder import Embedder
+from dnomia_knowledge.indexer import Indexer
+from dnomia_knowledge.search import HybridSearch
+
+store = Store("/tmp/test.db")
+embedder = Embedder()
+indexer = Indexer(store, embedder)
+
+# Index
+result = indexer.index_directory("my-project", "/path/to/project")
+print(f"{result.total_chunks} chunks, {result.total_files} files")
+
+# Search
+search = HybridSearch(store, embedder)
+results = search.search("JWT authentication", project_id="my-project")
+for r in results:
+    print(f"[{r.score:.4f}] {r.file_path} - {r.name}")
+
+store.close()
+```
+
+## Technical Details
+
+- **DB**: SQLite + FTS5 (BM25 keyword) + sqlite-vec (cosine KNN)
+- **Embedding**: intfloat/multilingual-e5-base (768d), `query:`/`passage:` prefix required
+- **Search**: Hybrid FTS5 + vector, RRF merge (k=60), prefix fallback
+- **Chunking**: `##`/`###` heading split, frontmatter parsing, min 200 char merge, overlap support
+- **Incremental**: MD5 content hash for change detection
+- **Memory**: Lazy model loading, explicit unload, runs on 8GB RAM
+
+## Testing
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/ -v
+ruff check src/ tests/
+```
+
+## License
+
+MIT
