@@ -283,6 +283,22 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         else:
             warn(f"{len(missing)} files missing from disk (run gc to clean)")
 
+    # --- Usage Data Checks ---
+    console.print("\n[bold]Usage Data[/bold]")
+
+    conn = store._connect()
+    interaction_count = conn.execute("SELECT COUNT(*) FROM chunk_interactions").fetchone()[0]
+    if interaction_count > 0:
+        ok(f"chunk_interactions: {interaction_count} entries")
+    else:
+        warn("chunk_interactions is empty (no usage data collected yet)")
+
+    search_log_count = conn.execute("SELECT COUNT(*) FROM search_log").fetchone()[0]
+    if search_log_count > 0:
+        ok(f"search_log: {search_log_count} entries")
+    else:
+        warn("search_log is empty (no searches recorded yet)")
+
     # Summary
     console.print(
         f"\n[bold]Summary:[/bold] {checks_passed} passed, "
@@ -316,6 +332,17 @@ def cmd_gc(args: argparse.Namespace) -> None:
         console.print(f"[green]Cleaned {cleaned} stale file entries.[/green]")
     else:
         console.print("[dim]No orphan data found.[/dim]")
+
+    if args.full:
+        interactions_deleted = store.delete_old_interactions(90)
+        logs_deleted = store.delete_old_search_logs(90)
+        if interactions_deleted or logs_deleted:
+            console.print(
+                f"[green]Full cleanup:[/green] {interactions_deleted} old interactions, "
+                f"{logs_deleted} old search logs removed"
+            )
+        else:
+            console.print("[dim]No old interactions or search logs to clean.[/dim]")
 
     store.close()
 
@@ -397,6 +424,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # gc
     p_gc = subparsers.add_parser("gc", help="Clean up orphan data")
+    p_gc.add_argument(
+        "--full", action="store_true", help="Also clean old interactions and search logs (>90 days)"
+    )
     p_gc.set_defaults(func=cmd_gc)
 
     # rebuild-graph

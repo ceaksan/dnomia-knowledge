@@ -63,6 +63,13 @@ class TestCLIParser:
         parser = build_parser()
         args = parser.parse_args(["gc"])
         assert args.command == "gc"
+        assert args.full is False
+
+    def test_gc_full_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["gc", "--full"])
+        assert args.command == "gc"
+        assert args.full is True
 
     def test_no_command_fails(self):
         parser = build_parser()
@@ -115,3 +122,134 @@ class TestDoctorChecks:
         assert len(missing) == 1
         assert "gone.md" in missing
         store.close()
+
+    def test_doctor_warns_empty_interactions(self, db_path, tmp_dir, capsys, monkeypatch):
+        """Doctor output should include interaction check warning when empty."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from dnomia_knowledge import cli
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+        store.register_project("test", str(tmp_dir), "content")
+        store.close()
+
+        monkeypatch.setenv("DNOMIA_KNOWLEDGE_DB", db_path)
+        output = StringIO()
+        monkeypatch.setattr(cli, "console", Console(file=output, force_terminal=False))
+
+        parser = build_parser()
+        args = parser.parse_args(["doctor"])
+        cli.cmd_doctor(args)
+
+        result = output.getvalue()
+        assert "chunk_interactions" in result
+        assert "search_log" in result
+
+    def test_doctor_ok_interactions(self, db_path, tmp_dir, monkeypatch):
+        """Doctor output should show OK when interactions exist."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from dnomia_knowledge import cli
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+        store.register_project("test", str(tmp_dir), "content")
+        store.insert_chunks(
+            "test",
+            [
+                {
+                    "file_path": "a.md",
+                    "content": "test",
+                    "chunk_domain": "content",
+                    "chunk_type": "block",
+                },
+            ],
+        )
+        conn = store._connect()
+        chunk_id = conn.execute("SELECT id FROM chunks LIMIT 1").fetchone()[0]
+        store.log_interaction(chunk_id, "view", "test")
+        store.log_search("test query", "test", "all", [chunk_id], 1)
+        store.close()
+
+        monkeypatch.setenv("DNOMIA_KNOWLEDGE_DB", db_path)
+        output = StringIO()
+        monkeypatch.setattr(cli, "console", Console(file=output, force_terminal=False))
+
+        parser = build_parser()
+        args = parser.parse_args(["doctor"])
+        # Doctor exits with code 1 due to chunk/vec mismatch (no vectors inserted)
+        with pytest.raises(SystemExit):
+            cli.cmd_doctor(args)
+
+        result = output.getvalue()
+        assert "chunk_interactions: 1 entries" in result
+        assert "search_log: 1 entries" in result
+
+
+class TestGCFull:
+    def test_gc_full_cleans_old_data(self, db_path, tmp_dir, monkeypatch):
+        """gc --full should call delete_old_interactions and delete_old_search_logs."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from rich.console import Console
+
+        from dnomia_knowledge import cli
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+        store.register_project("test", str(tmp_dir), "content")
+        store.close()
+
+        monkeypatch.setenv("DNOMIA_KNOWLEDGE_DB", db_path)
+        output = StringIO()
+        monkeypatch.setattr(cli, "console", Console(file=output, force_terminal=False))
+
+        parser = build_parser()
+        args = parser.parse_args(["gc", "--full"])
+
+        with (
+            patch.object(Store, "delete_old_interactions", return_value=5) as mock_interactions,
+            patch.object(Store, "delete_old_search_logs", return_value=3) as mock_logs,
+        ):
+            cli.cmd_gc(args)
+            mock_interactions.assert_called_once_with(90)
+            mock_logs.assert_called_once_with(90)
+
+        result = output.getvalue()
+        assert "5 old interactions" in result
+        assert "3 old search logs" in result
+
+    def test_gc_without_full_skips_cleanup(self, db_path, tmp_dir, monkeypatch):
+        """gc without --full should not call delete methods."""
+        from io import StringIO
+        from unittest.mock import patch
+
+        from rich.console import Console
+
+        from dnomia_knowledge import cli
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+        store.register_project("test", str(tmp_dir), "content")
+        store.close()
+
+        monkeypatch.setenv("DNOMIA_KNOWLEDGE_DB", db_path)
+        output = StringIO()
+        monkeypatch.setattr(cli, "console", Console(file=output, force_terminal=False))
+
+        parser = build_parser()
+        args = parser.parse_args(["gc"])
+
+        with (
+            patch.object(Store, "delete_old_interactions") as mock_interactions,
+            patch.object(Store, "delete_old_search_logs") as mock_logs,
+        ):
+            cli.cmd_gc(args)
+            mock_interactions.assert_not_called()
+            mock_logs.assert_not_called()
