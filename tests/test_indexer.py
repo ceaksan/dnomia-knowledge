@@ -6,7 +6,13 @@ import pytest
 
 from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.indexer import Indexer
-from dnomia_knowledge.registry import CodeConfig, ContentConfig, IndexingConfig, ProjectConfig
+from dnomia_knowledge.registry import (
+    CodeConfig,
+    ContentConfig,
+    GraphConfig,
+    IndexingConfig,
+    ProjectConfig,
+)
 from dnomia_knowledge.store import Store
 
 
@@ -216,4 +222,139 @@ class TestIndexerWithConfig:
         chunks = indexer._raw_chunk("test.py", content, None)
         assert len(chunks) > 1
         assert all(c.language == "py" for c in chunks)
+        store.close()
+
+
+class TestAstChunkerIntegration:
+    """Test AST chunker integration through the indexer pipeline."""
+
+    def test_python_file_produces_function_chunks(self, tmp_dir, db_path):
+        """Python code file indexed via AstChunker produces function-level chunks."""
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+
+        py_content = (
+            "def greet(name):\n"
+            '    """Return a greeting."""\n'
+            "    return f'Hello, {name}!'\n"
+            "\n"
+            "\n"
+            "def farewell(name):\n"
+            '    """Return a farewell."""\n'
+            "    return f'Goodbye, {name}!'\n"
+        )
+        config = ProjectConfig(
+            name="test",
+            type="saas",
+            content=ContentConfig(extensions=[".md"]),
+            code=CodeConfig(preset="python"),
+        )
+        (tmp_dir / "funcs.py").write_text(py_content)
+        result = indexer.index_directory("test", str(tmp_dir), config=config)
+        assert result.code_chunks >= 2
+
+        conn = store._connect()
+        rows = conn.execute(
+            "SELECT chunk_type FROM chunks WHERE project_id = ? AND file_path = ?",
+            ("test", "funcs.py"),
+        ).fetchall()
+        chunk_types = {r[0] for r in rows}
+        assert "function" in chunk_types
+        store.close()
+
+    def test_typescript_file_chunks(self, tmp_dir, db_path):
+        """TypeScript code file produces AST-based chunks."""
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+
+        ts_content = (
+            "interface User {\n"
+            "  name: string;\n"
+            "  age: number;\n"
+            "}\n"
+            "\n"
+            "function getUser(id: number): User {\n"
+            "  return { name: 'test', age: 25 };\n"
+            "}\n"
+        )
+        config = ProjectConfig(
+            name="test",
+            type="saas",
+            content=ContentConfig(extensions=[".md"]),
+            code=CodeConfig(preset="web"),
+        )
+        (tmp_dir / "user.ts").write_text(ts_content)
+        result = indexer.index_directory("test", str(tmp_dir), config=config)
+        assert result.code_chunks >= 1
+        store.close()
+
+    def test_syntax_error_still_produces_chunks(self, tmp_dir, db_path):
+        """File with syntax errors falls back to sliding-window, still produces chunks."""
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+
+        bad_py = (
+            "def broken(\n"
+            "    # missing closing paren and colon\n"
+            "    return 42\n"
+            "\n"
+            "def also_broken[[\n"
+            "    pass\n"
+        )
+        config = ProjectConfig(
+            name="test",
+            type="saas",
+            content=ContentConfig(extensions=[".md"]),
+            code=CodeConfig(preset="python"),
+        )
+        (tmp_dir / "bad.py").write_text(bad_py)
+        result = indexer.index_directory("test", str(tmp_dir), config=config)
+        assert result.code_chunks > 0
+        store.close()
+
+    def test_graph_enabled_flag_set(self, tmp_dir, db_path):
+        """Config with graph.enabled=True sets graph_enabled in projects table."""
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+
+        config = ProjectConfig(
+            name="test",
+            type="content",
+            graph=GraphConfig(enabled=True),
+        )
+        (tmp_dir / "readme.md").write_text(
+            "## Hello\n\n"
+            "This is a test document with enough content to pass the minimum "
+            "chunk size requirement of 200 characters. Adding more text here "
+            "to make sure the chunk is valid and gets properly indexed."
+        )
+        indexer.index_directory("test", str(tmp_dir), config=config)
+
+        conn = store._connect()
+        row = conn.execute("SELECT graph_enabled FROM projects WHERE id = ?", ("test",)).fetchone()
+        assert row is not None
+        assert row[0] == 1
+        store.close()
+
+    def test_graph_disabled_by_default(self, tmp_dir, db_path):
+        """Without graph config, graph_enabled defaults to False."""
+        store = Store(db_path)
+        embedder = Embedder()
+        indexer = Indexer(store, embedder)
+
+        (tmp_dir / "readme.md").write_text(
+            "## Hello\n\n"
+            "This is a test document with enough content to pass the minimum "
+            "chunk size requirement of 200 characters for proper indexing."
+        )
+        indexer.index_directory("test", str(tmp_dir))
+
+        conn = store._connect()
+        row = conn.execute("SELECT graph_enabled FROM projects WHERE id = ?", ("test",)).fetchone()
+        assert row is not None
+        assert row[0] == 0
         store.close()

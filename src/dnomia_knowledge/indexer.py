@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pathspec
 
+from dnomia_knowledge.chunker.ast_chunker import AstChunker
 from dnomia_knowledge.chunker.md_chunker import MdChunker
 from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.models import Chunk, IndexResult
@@ -118,7 +119,9 @@ class Indexer:
             chunks = self._md_chunker.chunk(file_path, content)
             domain = "content"
         elif ext in code_exts:
-            chunks = self._raw_chunk(file_path, content, config)
+            max_lines = config.code.max_chunk_lines if config else 50
+            ast_chunker = AstChunker(max_chunk_lines=max_lines, overlap_lines=2)
+            chunks = ast_chunker.chunk(file_path, content)
             domain = "code"
         else:
             return 0
@@ -128,7 +131,13 @@ class Indexer:
 
         # Ensure project exists (needed when index_file is called directly)
         project_type = config.type if config else "content"
-        self.store.register_project(project_id, project_path, project_type)
+        graph_enabled = config.graph.enabled if config else False
+        self.store.register_project(
+            project_id,
+            project_path,
+            project_type,
+            graph_enabled=graph_enabled,
+        )
 
         # Delete old chunks for this file
         self.store.delete_file_chunks(project_id, rel_path)
@@ -195,7 +204,14 @@ class Indexer:
 
         # Register project
         project_type = config.type if config else "content"
-        self.store.register_project(project_id, project_path, project_type, config_hash=config_hash)
+        graph_enabled = config.graph.enabled if config else False
+        self.store.register_project(
+            project_id,
+            project_path,
+            project_type,
+            graph_enabled=graph_enabled,
+            config_hash=config_hash,
+        )
 
         # Set embedding metadata on first use
         if not self.store.get_metadata("embedding_model"):
