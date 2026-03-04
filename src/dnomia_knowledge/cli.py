@@ -164,8 +164,134 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
-    """Run health checks. (Implemented in Task 6.)"""
-    console.print("[dim]Doctor command not yet implemented.[/dim]")
+    """Run health checks on the knowledge system."""
+    from pathlib import Path as PathLib
+
+    from dnomia_knowledge.registry import compute_config_hash, load_config
+    from dnomia_knowledge.store import Store
+
+    store = Store(_get_db_path())
+    checks_passed = 0
+    checks_failed = 0
+    checks_warned = 0
+
+    def ok(msg: str) -> None:
+        nonlocal checks_passed
+        console.print(f"  [green]OK[/green] {msg}")
+        checks_passed += 1
+
+    def fail(msg: str) -> None:
+        nonlocal checks_failed
+        console.print(f"  [red]FAIL[/red] {msg}")
+        checks_failed += 1
+
+    def warn(msg: str) -> None:
+        nonlocal checks_warned
+        console.print(f"  [yellow]WARN[/yellow] {msg}")
+        checks_warned += 1
+
+    # --- System Checks ---
+    console.print("\n[bold]System Checks[/bold]")
+
+    # Check 1: sqlite-vec extension loaded
+    try:
+        conn = store._connect()
+        conn.execute("SELECT vec_version()")
+        ok("sqlite-vec extension loaded")
+    except Exception as e:
+        fail(f"sqlite-vec extension: {e}")
+
+    # Check 2: Embedding model loadable
+    try:
+        from dnomia_knowledge.embedder import Embedder
+
+        embedder = Embedder()
+        embedder._ensure_loaded()
+        ok(f"Embedding model: {embedder.model_name}")
+        embedder.unload()
+    except Exception as e:
+        fail(f"Embedding model: {e}")
+
+    # Check 3: Schema version
+    schema_version = store.get_metadata("schema_version")
+    if schema_version:
+        ok(f"Schema version: {schema_version}")
+    else:
+        warn("Schema version not set")
+
+    # --- Per-Project Checks ---
+    projects_to_check = []
+    if args.project_id:
+        proj = store.get_project(args.project_id)
+        if proj:
+            projects_to_check = [proj]
+        else:
+            fail(f"Project '{args.project_id}' not found")
+    else:
+        projects_to_check = store.list_projects()
+
+    for proj in projects_to_check:
+        console.print(f"\n[bold]Project: {proj['id']}[/bold]")
+        project_path = proj["path"]
+
+        # Check 4: .knowledge.toml parseable
+        toml_path = PathLib(project_path) / ".knowledge.toml"
+        if toml_path.exists():
+            try:
+                config = load_config(project_path)
+                ok(f".knowledge.toml parsed: {config.name} ({config.type})")
+            except Exception as e:
+                fail(f".knowledge.toml parse error: {e}")
+                continue
+        else:
+            warn(".knowledge.toml not found (using defaults)")
+
+        # Check 5: config_hash current
+        if toml_path.exists():
+            current_hash = compute_config_hash(toml_path)
+            stored_hash = proj.get("config_hash")
+            if stored_hash == current_hash:
+                ok("Config hash current")
+            else:
+                warn("Config changed since last index, reindex recommended")
+
+        # Check 6: chunks count = chunks_vec count
+        conn = store._connect()
+        chunk_count = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE project_id = ?", (proj["id"],)
+        ).fetchone()[0]
+        vec_count = conn.execute(
+            "SELECT COUNT(*) FROM chunks_vec cv "
+            "JOIN chunks c ON cv.id = c.id "
+            "WHERE c.project_id = ?",
+            (proj["id"],),
+        ).fetchone()[0]
+        if chunk_count == vec_count:
+            ok(f"Chunk/vector count match: {chunk_count}")
+        else:
+            fail(f"Chunk count ({chunk_count}) != vector count ({vec_count})")
+
+        # Check 7: file_index files exist on disk
+        hashes = store.get_all_file_hashes(proj["id"])
+        missing = []
+        for rel_path in hashes:
+            full_path = os.path.join(project_path, rel_path)
+            if not os.path.exists(full_path):
+                missing.append(rel_path)
+        if not missing:
+            ok(f"All {len(hashes)} indexed files exist on disk")
+        else:
+            warn(f"{len(missing)} files missing from disk (run gc to clean)")
+
+    # Summary
+    console.print(
+        f"\n[bold]Summary:[/bold] {checks_passed} passed, "
+        f"{checks_warned} warnings, {checks_failed} failed"
+    )
+
+    store.close()
+    if checks_failed:
+        sys.exit(1)
 
 
 def cmd_gc(args: argparse.Namespace) -> None:
