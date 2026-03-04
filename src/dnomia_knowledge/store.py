@@ -623,6 +623,14 @@ class Store:
         conn.commit()
         return cursor.rowcount
 
+    # -- Chunk Content --
+
+    def get_chunk_content(self, chunk_id: int) -> str | None:
+        """Fetch full content for a single chunk by ID."""
+        conn = self._connect()
+        row = conn.execute("SELECT content FROM chunks WHERE id = ?", (chunk_id,)).fetchone()
+        return row[0] if row else None
+
     # -- File -> Chunk Mapping --
 
     def get_chunk_ids_for_file(self, project_id: str, file_path: str) -> list[int]:

@@ -11,6 +11,69 @@ from dnomia_knowledge.store import Store
 
 
 @pytest.fixture
+def populated_store_with_code(db_path):
+    """Store with both content (md) and code (py) chunks for filter testing."""
+    store = Store(db_path)
+    embedder = Embedder()
+    store.register_project("test", "/tmp/test", "content")
+
+    chunks_data = [
+        {
+            "file_path": "docs/auth.md",
+            "chunk_domain": "content",
+            "chunk_type": "heading",
+            "name": "Auth Docs",
+            "language": "md",
+            "content": "Authentication documentation with JWT tokens and OAuth flows.",
+        },
+        {
+            "file_path": "docs/database.md",
+            "chunk_domain": "content",
+            "chunk_type": "heading",
+            "name": "DB Docs",
+            "language": "md",
+            "content": "Database schema documentation with PostgreSQL and migrations.",
+        },
+        {
+            "file_path": "src/auth/login.py",
+            "chunk_domain": "code",
+            "chunk_type": "function",
+            "name": "authenticate_user",
+            "language": "python",
+            "content": (
+                "def authenticate_user(username, password):\n"
+                "    return check_credentials(username, password)"
+            ),
+        },
+        {
+            "file_path": "src/auth/tokens.py",
+            "chunk_domain": "code",
+            "chunk_type": "function",
+            "name": "create_token",
+            "language": "python",
+            "content": (
+                "def create_token(user_id):\n    return jwt.encode({'sub': user_id}, SECRET_KEY)"
+            ),
+        },
+        {
+            "file_path": "src/models/user.ts",
+            "chunk_domain": "code",
+            "chunk_type": "class",
+            "name": "UserModel",
+            "language": "typescript",
+            "content": "export class UserModel {\n    id: string;\n    username: string;\n}",
+        },
+    ]
+
+    chunk_ids = store.insert_chunks("test", chunks_data)
+    texts = [c["content"] for c in chunks_data]
+    vectors = embedder.embed_passages(texts)
+    store.insert_chunk_vectors(chunk_ids, vectors)
+
+    return store, embedder
+
+
+@pytest.fixture
 def populated_store(db_path):
     """Store with chunks and vectors for search testing."""
     store = Store(db_path)
@@ -336,3 +399,47 @@ class TestRRFMerge:
         ]
         merged = rrf_merge(list_a, [], k=60, limit=3)
         assert len(merged) == 3
+
+
+class TestSearchFilters:
+    def test_language_filter_returns_only_matching(self, populated_store_with_code):
+        store, embedder = populated_store_with_code
+        search = HybridSearch(store, embedder)
+        results = search.search("authentication", project_id="test", language="python")
+        assert len(results) > 0
+        for r in results:
+            assert r.language == "python"
+
+    def test_language_filter_no_matches(self, populated_store_with_code):
+        store, embedder = populated_store_with_code
+        search = HybridSearch(store, embedder)
+        results = search.search("authentication", project_id="test", language="rust")
+        assert len(results) == 0
+
+    def test_file_pattern_filter(self, populated_store_with_code):
+        store, embedder = populated_store_with_code
+        search = HybridSearch(store, embedder)
+        results = search.search("authentication", project_id="test", file_pattern="docs/")
+        assert len(results) > 0
+        for r in results:
+            assert "docs/" in r.file_path
+
+    def test_combined_domain_and_language(self, populated_store_with_code):
+        store, embedder = populated_store_with_code
+        search = HybridSearch(store, embedder)
+        results = search.search(
+            "user model", project_id="test", domain="code", language="typescript"
+        )
+        assert len(results) > 0
+        for r in results:
+            assert r.chunk_domain == "code"
+            assert r.language == "typescript"
+
+    def test_file_pattern_with_language(self, populated_store_with_code):
+        store, embedder = populated_store_with_code
+        search = HybridSearch(store, embedder)
+        results = search.search("token", project_id="test", language="python", file_pattern="auth")
+        assert len(results) > 0
+        for r in results:
+            assert r.language == "python"
+            assert "auth" in r.file_path

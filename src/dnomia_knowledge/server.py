@@ -66,6 +66,9 @@ def create_server() -> FastMCP:
         project: str | None = None,
         cross: bool = False,
         limit: int = 10,
+        language: str = "",
+        file_pattern: str = "",
+        show_content: bool = False,
     ) -> str:
         """Hybrid semantic + keyword search across project knowledge.
 
@@ -75,12 +78,17 @@ def create_server() -> FastMCP:
             project: Project ID (default: DNOMIA_KNOWLEDGE_PROJECT env var)
             cross: If True, also search linked projects
             limit: Maximum results to return
+            language: Filter by language (e.g. "python", "typescript")
+            file_pattern: Filter by file path pattern (e.g. "auth", "models.py")
+            show_content: If True, show full chunk content instead of truncated snippet
         """
         if not query or not query.strip():
             return "Empty query."
 
         project_id = project or _default_project()
         searcher = _get_search()
+        lang = language or None
+        fpattern = file_pattern or None
 
         if cross and project_id:
             from dnomia_knowledge.registry import load_config
@@ -97,15 +105,32 @@ def create_server() -> FastMCP:
                     related_projects=related,
                     domain=domain,
                     limit=limit,
+                    language=lang,
+                    file_pattern=fpattern,
                 )
             else:
-                results = searcher.search(query, project_id=project_id, domain=domain, limit=limit)
+                results = searcher.search(
+                    query,
+                    project_id=project_id,
+                    domain=domain,
+                    limit=limit,
+                    language=lang,
+                    file_pattern=fpattern,
+                )
         else:
-            results = searcher.search(query, project_id=project_id, domain=domain, limit=limit)
+            results = searcher.search(
+                query,
+                project_id=project_id,
+                domain=domain,
+                limit=limit,
+                language=lang,
+                file_pattern=fpattern,
+            )
 
         if not results:
             return "No results found."
 
+        store = _get_store()
         lines = []
         for i, r in enumerate(results, 1):
             header = f"[{i}] {r.file_path}"
@@ -122,16 +147,21 @@ def create_server() -> FastMCP:
             elif r.chunk_type:
                 name_line = f"    [{r.chunk_type}]"
 
-            snippet = ""
-            if r.snippet:
-                snippet_lines = r.snippet.split("\n")[:5]
-                snippet = "\n".join(f"    {line}" for line in snippet_lines)
+            content_block = ""
+            if show_content:
+                full_content = store.get_chunk_content(r.chunk_id)
+                if full_content:
+                    content_block = "\n".join(f"    {line}" for line in full_content.split("\n"))
+            else:
+                if r.snippet:
+                    snippet_lines = r.snippet.split("\n")[:5]
+                    content_block = "\n".join(f"    {line}" for line in snippet_lines)
 
             parts = [header]
             if name_line:
                 parts.append(name_line)
-            if snippet:
-                parts.append(snippet)
+            if content_block:
+                parts.append(content_block)
             lines.append("\n".join(parts))
 
         return "\n\n".join(lines)

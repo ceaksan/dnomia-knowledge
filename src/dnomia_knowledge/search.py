@@ -60,18 +60,26 @@ class HybridSearch:
         project_id: str | None = None,
         domain: str = "all",
         limit: int = 10,
+        language: str | None = None,
+        file_pattern: str | None = None,
     ) -> list[SearchResult]:
         if not query or not query.strip():
             return []
 
         # Run FTS5 and vector search in sequence (same thread, same DB)
         fetch_limit = limit * 3  # over-fetch for RRF merge quality
-        fts_results = self._search_fts(query, project_id, domain, fetch_limit)
-        vec_results = self._search_vector(query, project_id, domain, fetch_limit)
+        fts_results = self._search_fts(
+            query, project_id, domain, fetch_limit, language=language, file_pattern=file_pattern
+        )
+        vec_results = self._search_vector(
+            query, project_id, domain, fetch_limit, language=language, file_pattern=file_pattern
+        )
 
         if not fts_results and not vec_results:
             # Fallback: prefix match
-            fts_results = self._search_fts_prefix(query, project_id, domain, fetch_limit)
+            fts_results = self._search_fts_prefix(
+                query, project_id, domain, fetch_limit, language=language, file_pattern=file_pattern
+            )
 
         results = rrf_merge(fts_results, vec_results, k=60, limit=limit)
         results = self._apply_interaction_boost(results, project_id)
@@ -122,7 +130,13 @@ class HybridSearch:
             logger.debug("Failed to log search results", exc_info=True)
 
     def _search_fts(
-        self, query: str, project_id: str | None, domain: str, limit: int
+        self,
+        query: str,
+        project_id: str | None,
+        domain: str,
+        limit: int,
+        language: str | None = None,
+        file_pattern: str | None = None,
     ) -> list[SearchResult]:
         sanitized = _sanitize_fts_query(query)
         if not sanitized:
@@ -138,6 +152,12 @@ class HybridSearch:
         if domain != "all":
             where_clauses.append("c.chunk_domain = ?")
             params.append(domain)
+        if language:
+            where_clauses.append("c.language = ?")
+            params.append(language)
+        if file_pattern:
+            where_clauses.append("c.file_path LIKE ?")
+            params.append(f"%{file_pattern}%")
 
         where_sql = f"AND {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -162,7 +182,13 @@ class HybridSearch:
         return [self._row_to_result(r) for r in rows]
 
     def _search_fts_prefix(
-        self, query: str, project_id: str | None, domain: str, limit: int
+        self,
+        query: str,
+        project_id: str | None,
+        domain: str,
+        limit: int,
+        language: str | None = None,
+        file_pattern: str | None = None,
     ) -> list[SearchResult]:
         """Layer 2 fallback: prefix match."""
         sanitized = _sanitize_fts_query(query)
@@ -179,6 +205,12 @@ class HybridSearch:
         if domain != "all":
             where_clauses.append("c.chunk_domain = ?")
             params.append(domain)
+        if language:
+            where_clauses.append("c.language = ?")
+            params.append(language)
+        if file_pattern:
+            where_clauses.append("c.file_path LIKE ?")
+            params.append(f"%{file_pattern}%")
         where_sql = f"AND {' AND '.join(where_clauses)}" if where_clauses else ""
 
         sql = f"""
@@ -200,7 +232,13 @@ class HybridSearch:
         return [self._row_to_result(r) for r in rows]
 
     def _search_vector(
-        self, query: str, project_id: str | None, domain: str, limit: int
+        self,
+        query: str,
+        project_id: str | None,
+        domain: str,
+        limit: int,
+        language: str | None = None,
+        file_pattern: str | None = None,
     ) -> list[SearchResult]:
         query_vec = self._embedder.embed_query(query)
         conn = self._store._connect()
@@ -235,6 +273,12 @@ class HybridSearch:
         if domain != "all":
             where_clauses.append("c.chunk_domain = ?")
             params.append(domain)
+        if language:
+            where_clauses.append("c.language = ?")
+            params.append(language)
+        if file_pattern:
+            where_clauses.append("c.file_path LIKE ?")
+            params.append(f"%{file_pattern}%")
 
         where_sql = " AND ".join(where_clauses)
 
@@ -265,6 +309,8 @@ class HybridSearch:
         related_projects: list[str],
         domain: str = "all",
         limit: int = 10,
+        language: str | None = None,
+        file_pattern: str | None = None,
     ) -> list[SearchResult]:
         """Search across primary project and related projects, merge with RRF."""
         all_project_ids = [project_id] + [p for p in related_projects if p != project_id]
@@ -277,7 +323,14 @@ class HybridSearch:
             if not proj:
                 logger.warning("Related project '%s' not found, skipping.", pid)
                 continue
-            results = self.search(query, project_id=pid, domain=domain, limit=per_project_limit)
+            results = self.search(
+                query,
+                project_id=pid,
+                domain=domain,
+                limit=per_project_limit,
+                language=language,
+                file_pattern=file_pattern,
+            )
             if results:
                 # Normalize scores within each project
                 _normalize_scores(results)
