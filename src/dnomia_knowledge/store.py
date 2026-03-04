@@ -641,3 +641,23 @@ class Store:
             (project_id, file_path),
         ).fetchall()
         return [r[0] for r in rows]
+
+    def get_chunks_for_file(self, project_id: str, file_path: str) -> list[dict]:
+        """All chunks for a file with full details, ordered by start_line."""
+        conn = self._connect()
+        rows = conn.execute(
+            """SELECT id, chunk_type, name, language, start_line, end_line, content
+               FROM chunks WHERE project_id = ? AND file_path = ?
+               ORDER BY start_line""",
+            (project_id, file_path),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_file_line_count(self, project_id: str, file_path: str) -> int | None:
+        """Max end_line from indexed chunks."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT MAX(end_line) FROM chunks WHERE project_id = ? AND file_path = ?",
+            (project_id, file_path),
+        ).fetchone()
+        return row[0] if row and row[0] else None

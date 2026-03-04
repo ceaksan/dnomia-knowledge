@@ -486,3 +486,79 @@ class TestSearchLogCRUD:
 
         ids_b = store.get_chunk_ids_for_file("test", "b.md")
         assert len(ids_b) == 1
+
+
+class TestFileChunkQueries:
+    def test_get_chunks_for_file(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        store.insert_chunks(
+            "test",
+            [
+                {
+                    "file_path": "a.py",
+                    "chunk_type": "function",
+                    "name": "bar",
+                    "language": "python",
+                    "start_line": 20,
+                    "end_line": 30,
+                    "content": "def bar(): pass",
+                },
+                {
+                    "file_path": "a.py",
+                    "chunk_type": "function",
+                    "name": "foo",
+                    "language": "python",
+                    "start_line": 1,
+                    "end_line": 10,
+                    "content": "def foo(): pass",
+                },
+            ],
+        )
+        chunks = store.get_chunks_for_file("test", "a.py")
+        assert len(chunks) == 2
+        # Ordered by start_line
+        assert chunks[0]["name"] == "foo"
+        assert chunks[0]["start_line"] == 1
+        assert chunks[1]["name"] == "bar"
+        assert chunks[1]["start_line"] == 20
+        # All expected fields present
+        assert "id" in chunks[0]
+        assert "chunk_type" in chunks[0]
+        assert "language" in chunks[0]
+        assert "content" in chunks[0]
+
+    def test_get_chunks_for_file_empty(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        chunks = store.get_chunks_for_file("test", "nonexistent.py")
+        assert chunks == []
+
+    def test_get_file_line_count(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        store.insert_chunks(
+            "test",
+            [
+                {
+                    "file_path": "a.py",
+                    "start_line": 1,
+                    "end_line": 50,
+                    "content": "first chunk",
+                },
+                {
+                    "file_path": "a.py",
+                    "start_line": 51,
+                    "end_line": 120,
+                    "content": "second chunk",
+                },
+            ],
+        )
+        line_count = store.get_file_line_count("test", "a.py")
+        assert line_count == 120
+
+    def test_get_file_line_count_unknown(self, db_path):
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        line_count = store.get_file_line_count("test", "nonexistent.py")
+        assert line_count is None
