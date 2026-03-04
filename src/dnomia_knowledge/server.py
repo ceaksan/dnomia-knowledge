@@ -501,9 +501,10 @@ def create_server() -> FastMCP:
         project_id = project or urlparse(url).netloc.replace(".", "-")
         url_path = urlparse(url).path or "/"
 
-        # Register project
+        # Register project and delete old chunks for this URL path
         store = _get_store()
         store.register_project(project_id, url, "web")
+        store.delete_file_chunks(project_id, url_path)
 
         # Chunk text
         chunker = MdChunker()

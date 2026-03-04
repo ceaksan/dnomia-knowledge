@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.graph import GraphBuilder
 from dnomia_knowledge.indexer import Indexer
 from dnomia_knowledge.registry import load_config
@@ -60,14 +59,14 @@ ignore_patterns = ["__pycache__"]
 
 
 class TestFullPipeline:
-    def test_index_with_config(self, full_project, db_path):
+    def test_index_with_config(self, full_project, db_path, shared_embedder):
         """Index a project with .knowledge.toml - both content and code files."""
         config = load_config(full_project)
         assert config is not None
         assert config.name == "test-project"
 
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
 
         result = indexer.index_directory(
@@ -82,11 +81,11 @@ class TestFullPipeline:
         assert result.status == "completed"
         store.close()
 
-    def test_search_content_and_code(self, full_project, db_path):
+    def test_search_content_and_code(self, full_project, db_path, shared_embedder):
         """Search should find results from both content and code chunks."""
         config = load_config(full_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("test-project", str(full_project), config=config)
 
@@ -97,13 +96,13 @@ class TestFullPipeline:
 
         store.close()
 
-    def test_backward_compat_no_config(self, tmp_dir, db_path, sample_markdown):
+    def test_backward_compat_no_config(self, tmp_dir, db_path, sample_markdown, shared_embedder):
         """Without .knowledge.toml, works exactly like Sprint 1."""
         (tmp_dir / "post.md").write_text(sample_markdown)
         (tmp_dir / "app.py").write_text("def hello(): pass\n")
 
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
 
         result = indexer.index_directory("test", str(tmp_dir))
@@ -111,11 +110,11 @@ class TestFullPipeline:
         assert result.code_chunks == 0
         store.close()
 
-    def test_domain_filter_code(self, full_project, db_path):
+    def test_domain_filter_code(self, full_project, db_path, shared_embedder):
         """Search with domain='code' should return only code chunks."""
         config = load_config(full_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("test-project", str(full_project), config=config)
 
@@ -204,11 +203,11 @@ edge_types = ["tag", "category"]
         )
         return tmp_dir
 
-    def test_ast_chunks_in_pipeline(self, python_project, db_path):
+    def test_ast_chunks_in_pipeline(self, python_project, db_path, shared_embedder):
         """AST chunker produces function-level chunks, not raw blocks."""
         config = load_config(python_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
 
         result = indexer.index_directory(
@@ -231,11 +230,11 @@ edge_types = ["tag", "category"]
 
         store.close()
 
-    def test_graph_edges_created_on_index(self, graph_project, db_path):
+    def test_graph_edges_created_on_index(self, graph_project, db_path, shared_embedder):
         """Indexing with graph.enabled=true creates edges in the edges table."""
         config = load_config(graph_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
 
         indexer.index_directory(
@@ -252,11 +251,11 @@ edge_types = ["tag", "category"]
 
         store.close()
 
-    def test_rebuild_graph_creates_communities(self, graph_project, db_path):
+    def test_rebuild_graph_creates_communities(self, graph_project, db_path, shared_embedder):
         """rebuild_all_edges + run_community_detection writes community_id to metadata."""
         config = load_config(graph_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
 
         indexer.index_directory(
@@ -317,10 +316,10 @@ edge_types = ["tag", "category"]
 
         store.close()
 
-    def test_cross_project_search(self, db_path):
+    def test_cross_project_search(self, db_path, shared_embedder):
         """search_cross returns results from both primary and related projects."""
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
 
         with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as dir_b:
@@ -384,10 +383,10 @@ extensions = [".md"]
 
         store.close()
 
-    def test_cross_project_no_related_is_regular_search(self, db_path):
+    def test_cross_project_no_related_is_regular_search(self, db_path, shared_embedder):
         """search_cross with empty related list behaves like regular search."""
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
 
         with tempfile.TemporaryDirectory() as td:
@@ -436,7 +435,7 @@ class TestSprint4Integration:
     """Sprint 4: interactions, search logging, hook script, GC."""
 
     @pytest.fixture
-    def indexed_project(self, tmp_dir, db_path):
+    def indexed_project(self, tmp_dir, db_path, shared_embedder):
         """Index a project with content + code files, return (store, project_id, tmp_dir)."""
         toml_content = b"""
 [project]
@@ -474,7 +473,7 @@ paths = ["src/"]
 
         config = load_config(tmp_dir)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("s4-test", str(tmp_dir), config=config)
 
@@ -500,10 +499,10 @@ paths = ["src/"]
         result_ids = json.loads(matching[0]["result_chunk_ids"])
         assert len(result_ids) > 0
 
-    def test_interaction_boost_ranks_higher(self, db_path):
+    def test_interaction_boost_ranks_higher(self, db_path, shared_embedder):
         """Log interactions for one chunk, verify it scores higher after boost."""
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
 
         with tempfile.TemporaryDirectory() as td:
             path = Path(td)
@@ -745,11 +744,11 @@ paths = ["src/"]
         )
         return tmp_dir
 
-    def test_search_with_language_filter(self, mixed_project, db_path):
+    def test_search_with_language_filter(self, mixed_project, db_path, shared_embedder):
         """Index project, search with language='python', verify only Python results."""
         config = load_config(mixed_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("s5-test", str(mixed_project), config=config)
 
@@ -764,11 +763,11 @@ paths = ["src/"]
 
         store.close()
 
-    def test_search_with_file_pattern_filter(self, mixed_project, db_path):
+    def test_search_with_file_pattern_filter(self, mixed_project, db_path, shared_embedder):
         """Index project, search with file_pattern='docs', verify path filtering."""
         config = load_config(mixed_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("s5-test", str(mixed_project), config=config)
 
@@ -781,11 +780,11 @@ paths = ["src/"]
 
         store.close()
 
-    def test_pre_tool_use_blocks_large_file_read(self, mixed_project, db_path):
+    def test_pre_tool_use_blocks_large_file_read(self, mixed_project, db_path, shared_embedder):
         """PreToolUse hook blocks Read for large files inside indexed project."""
         config = load_config(mixed_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("s5-test", str(mixed_project), config=config)
         store.close()
@@ -815,11 +814,11 @@ paths = ["src/"]
         assert response["decision"] == "block"
         assert "350 lines" in response["reason"]
 
-    def test_pre_tool_use_allows_small_file_read(self, mixed_project, db_path):
+    def test_pre_tool_use_allows_small_file_read(self, mixed_project, db_path, shared_embedder):
         """PreToolUse hook allows Read for small files (< 300 lines)."""
         config = load_config(mixed_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("s5-test", str(mixed_project), config=config)
         store.close()
@@ -845,11 +844,13 @@ paths = ["src/"]
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
-    def test_pre_tool_use_blocks_grep_in_indexed_project(self, mixed_project, db_path):
+    def test_pre_tool_use_blocks_grep_in_indexed_project(
+        self, mixed_project, db_path, shared_embedder
+    ):
         """PreToolUse hook blocks Grep targeting an indexed project directory."""
         config = load_config(mixed_project)
         store = Store(db_path)
-        embedder = Embedder()
+        embedder = shared_embedder
         indexer = Indexer(store, embedder)
         indexer.index_directory("s5-test", str(mixed_project), config=config)
         store.close()

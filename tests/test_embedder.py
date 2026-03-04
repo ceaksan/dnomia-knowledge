@@ -9,8 +9,8 @@ from dnomia_knowledge.embedder import Embedder
 
 class TestEmbedder:
     @pytest.fixture(autouse=True)
-    def setup(self):
-        self.embedder = Embedder()
+    def setup(self, shared_embedder):
+        self.embedder = shared_embedder
 
     def test_dimension(self):
         assert self.embedder.dimension == 768
@@ -46,14 +46,15 @@ class TestEmbedder:
 
     def test_lazy_loading(self):
         """Model should not be loaded until first embed call."""
-        embedder = Embedder()
-        assert embedder._model is None
-        embedder.embed_query("trigger load")
-        assert embedder._model is not None
+        fresh = Embedder()
+        assert fresh._model is None
+        fresh.embed_query("trigger load")
+        assert fresh._model is not None
 
     def test_unload(self):
         """Model should be unloadable."""
-        self.embedder.embed_query("trigger load")
-        assert self.embedder._model is not None
-        self.embedder.unload()
-        assert self.embedder._model is None
+        fresh = Embedder()
+        fresh.embed_query("trigger load")
+        assert fresh._model is not None
+        fresh.unload()
+        assert fresh._model is None

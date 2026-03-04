@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.models import SearchResult
 from dnomia_knowledge.search import HybridSearch
 from dnomia_knowledge.store import Store
 
 
 @pytest.fixture
-def populated_store_with_code(db_path):
+def populated_store_with_code(db_path, shared_embedder):
     """Store with both content (md) and code (py) chunks for filter testing."""
     store = Store(db_path)
-    embedder = Embedder()
+    embedder = shared_embedder
     store.register_project("test", "/tmp/test", "content")
 
     chunks_data = [
@@ -74,10 +73,10 @@ def populated_store_with_code(db_path):
 
 
 @pytest.fixture
-def populated_store(db_path):
+def populated_store(db_path, shared_embedder):
     """Store with chunks and vectors for search testing."""
     store = Store(db_path)
-    embedder = Embedder()
+    embedder = shared_embedder
     store.register_project("test", "/tmp/test", "content")
 
     chunks_data = [

@@ -21,6 +21,14 @@ def db_path(tmp_dir):
     return str(tmp_dir / "test.db")
 
 
+@pytest.fixture(scope="session")
+def shared_embedder():
+    """Session-scoped embedder to avoid reloading the model per test."""
+    from dnomia_knowledge.embedder import Embedder
+
+    return Embedder()
+
+
 @pytest.fixture
 def sample_markdown():
     """Sample markdown content for testing."""

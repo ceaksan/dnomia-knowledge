@@ -148,10 +148,9 @@ class Indexer:
                 graph_enabled=graph_enabled,
             )
 
-        # Delete old chunks for this file
-        self.store.delete_file_chunks(project_id, rel_path)
+        # All DB ops in a single transaction
+        self.store.delete_file_chunks(project_id, rel_path, commit=False)
 
-        # Prepare chunk data
         chunk_dicts = [
             {
                 "file_path": rel_path,
@@ -167,19 +166,17 @@ class Indexer:
             for c in chunks
         ]
 
-        # Insert chunks
-        chunk_ids = self.store.insert_chunks(project_id, chunk_dicts)
+        chunk_ids = self.store.insert_chunks(project_id, chunk_dicts, commit=False)
 
-        # Embed and store vectors
         texts = [c.content for c in chunks]
         vectors = self.embedder.embed_passages(texts)
-        self.store.insert_chunk_vectors(chunk_ids, vectors)
+        self.store.insert_chunk_vectors(chunk_ids, vectors, commit=False)
 
-        # Update file index
         if file_hash is None:
             file_hash = _compute_file_hash(file_path)
-        self.store.upsert_file_index(project_id, rel_path, file_hash, len(chunk_ids))
+        self.store.upsert_file_index(project_id, rel_path, file_hash, len(chunk_ids), commit=False)
 
+        self.store._connect().commit()
         return len(chunk_ids), chunk_ids
 
     def index_directory(

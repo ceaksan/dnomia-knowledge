@@ -209,7 +209,9 @@ class Store:
 
     # -- Chunks --
 
-    def insert_chunks(self, project_id: str, chunks: list[dict]) -> list[int]:
+    def insert_chunks(
+        self, project_id: str, chunks: list[dict], *, commit: bool = True
+    ) -> list[int]:
         conn = self._connect()
         ids = []
         for c in chunks:
@@ -232,25 +234,30 @@ class Store:
                 ),
             )
             ids.append(cursor.lastrowid)
-        conn.commit()
+        if commit:
+            conn.commit()
         return ids
 
-    def insert_chunk_vectors(self, chunk_ids: list[int], vectors: list[list[float]]) -> None:
+    def insert_chunk_vectors(
+        self, chunk_ids: list[int], vectors: list[list[float]], *, commit: bool = True
+    ) -> None:
         conn = self._connect()
         for chunk_id, vec in zip(chunk_ids, vectors):
             conn.execute(
                 "INSERT INTO chunks_vec (id, embedding) VALUES (?, ?)",
                 (chunk_id, json.dumps(vec)),
             )
-        conn.commit()
+        if commit:
+            conn.commit()
 
-    def delete_file_chunks(self, project_id: str, file_path: str) -> int:
+    def delete_file_chunks(self, project_id: str, file_path: str, *, commit: bool = True) -> int:
         conn = self._connect()
         cursor = conn.execute(
             "DELETE FROM chunks WHERE project_id = ? AND file_path = ?",
             (project_id, file_path),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return cursor.rowcount
 
     def get_project_stats(self, project_id: str) -> dict:
@@ -274,7 +281,13 @@ class Store:
     # -- File Index --
 
     def upsert_file_index(
-        self, project_id: str, file_path: str, file_hash: str, chunk_count: int
+        self,
+        project_id: str,
+        file_path: str,
+        file_hash: str,
+        chunk_count: int,
+        *,
+        commit: bool = True,
     ) -> None:
         conn = self._connect()
         conn.execute(
@@ -286,7 +299,8 @@ class Store:
                    last_indexed = datetime('now')""",
             (project_id, file_path, file_hash, chunk_count),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
 
     def get_file_hash(self, project_id: str, file_path: str) -> str | None:
         conn = self._connect()

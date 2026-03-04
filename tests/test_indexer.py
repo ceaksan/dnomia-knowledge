@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.indexer import Indexer
 from dnomia_knowledge.registry import (
     CodeConfig,
@@ -17,10 +16,9 @@ from dnomia_knowledge.store import Store
 
 
 @pytest.fixture
-def indexer(db_path):
+def indexer(db_path, shared_embedder):
     store = Store(db_path)
-    embedder = Embedder()
-    return Indexer(store, embedder)
+    return Indexer(store, shared_embedder)
 
 
 class TestIndexer:
@@ -86,11 +84,10 @@ class TestIndexer:
 
 
 class TestIndexerWithConfig:
-    def test_config_scans_code_files(self, tmp_dir, db_path):
+    def test_config_scans_code_files(self, tmp_dir, db_path, shared_embedder):
         """With preset='python', .py files indexed as code chunks."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         config = ProjectConfig(
             name="test",
@@ -111,11 +108,10 @@ class TestIndexerWithConfig:
         assert result.code_chunks > 0
         store.close()
 
-    def test_no_config_only_markdown(self, tmp_dir, db_path):
+    def test_no_config_only_markdown(self, tmp_dir, db_path, shared_embedder):
         """Without config, only .md/.mdx files are indexed (Sprint 1 backward compat)."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         (tmp_dir / "post.md").write_text(
             "## Post Title\n\n"
@@ -129,11 +125,10 @@ class TestIndexerWithConfig:
         assert result.code_chunks == 0
         store.close()
 
-    def test_config_content_paths_scoping(self, tmp_dir, db_path):
+    def test_config_content_paths_scoping(self, tmp_dir, db_path, shared_embedder):
         """Config content.paths restricts scanning to specified dirs."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         config = ProjectConfig(
             name="test",
@@ -155,11 +150,10 @@ class TestIndexerWithConfig:
         assert result.total_files == 1  # only docs/guide.md
         store.close()
 
-    def test_config_ignore_patterns(self, tmp_dir, db_path):
+    def test_config_ignore_patterns(self, tmp_dir, db_path, shared_embedder):
         """Custom ignore patterns from config are respected."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         config = ProjectConfig(
             name="test",
@@ -179,11 +173,10 @@ class TestIndexerWithConfig:
         assert result.total_files == 1  # only readme.md
         store.close()
 
-    def test_config_max_file_size(self, tmp_dir, db_path):
+    def test_config_max_file_size(self, tmp_dir, db_path, shared_embedder):
         """Files exceeding config max_file_size_kb are skipped."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         config = ProjectConfig(
             name="test",
@@ -205,11 +198,10 @@ class TestIndexerWithConfig:
 class TestAstChunkerIntegration:
     """Test AST chunker integration through the indexer pipeline."""
 
-    def test_python_file_produces_function_chunks(self, tmp_dir, db_path):
+    def test_python_file_produces_function_chunks(self, tmp_dir, db_path, shared_embedder):
         """Python code file indexed via AstChunker produces function-level chunks."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         py_content = (
             "def greet(name):\n"
@@ -240,11 +232,10 @@ class TestAstChunkerIntegration:
         assert "function" in chunk_types
         store.close()
 
-    def test_typescript_file_chunks(self, tmp_dir, db_path):
+    def test_typescript_file_chunks(self, tmp_dir, db_path, shared_embedder):
         """TypeScript code file produces AST-based chunks."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         ts_content = (
             "interface User {\n"
@@ -267,11 +258,10 @@ class TestAstChunkerIntegration:
         assert result.code_chunks >= 1
         store.close()
 
-    def test_syntax_error_still_produces_chunks(self, tmp_dir, db_path):
+    def test_syntax_error_still_produces_chunks(self, tmp_dir, db_path, shared_embedder):
         """File with syntax errors falls back to sliding-window, still produces chunks."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         bad_py = (
             "def broken(\n"
@@ -292,11 +282,10 @@ class TestAstChunkerIntegration:
         assert result.code_chunks > 0
         store.close()
 
-    def test_graph_enabled_flag_set(self, tmp_dir, db_path):
+    def test_graph_enabled_flag_set(self, tmp_dir, db_path, shared_embedder):
         """Config with graph.enabled=True sets graph_enabled in projects table."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         config = ProjectConfig(
             name="test",
@@ -317,11 +306,10 @@ class TestAstChunkerIntegration:
         assert row[0] == 1
         store.close()
 
-    def test_graph_disabled_by_default(self, tmp_dir, db_path):
+    def test_graph_disabled_by_default(self, tmp_dir, db_path, shared_embedder):
         """Without graph config, graph_enabled defaults to False."""
         store = Store(db_path)
-        embedder = Embedder()
-        indexer = Indexer(store, embedder)
+        indexer = Indexer(store, shared_embedder)
 
         (tmp_dir / "readme.md").write_text(
             "## Hello\n\n"
