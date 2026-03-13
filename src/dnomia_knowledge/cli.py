@@ -528,6 +528,81 @@ def cmd_install_hooks(args: argparse.Namespace) -> None:
     store.close()
 
 
+PLIST_LABEL = "com.dnomia-knowledge.index"
+
+
+def _generate_plist(bin_path: str) -> str:
+    """Generate launchd plist XML."""
+    home = os.path.expanduser("~")
+    log_dir = os.path.join(home, ".local", "share", "dnomia-knowledge")
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bin_path}</string>
+        <string>index-all</string>
+        <string>--changed</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>{log_dir}/index.log</string>
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/index-error.log</string>
+</dict>
+</plist>
+"""
+
+
+def cmd_install_launchd(args: argparse.Namespace) -> None:
+    """Install or uninstall launchd periodic job."""
+    import shutil
+    import subprocess as sp
+
+    home = os.path.expanduser("~")
+    plist_path = os.path.join(home, "Library", "LaunchAgents", f"{PLIST_LABEL}.plist")
+    log_dir = os.path.join(home, ".local", "share", "dnomia-knowledge")
+
+    if args.uninstall:
+        if os.path.exists(plist_path):
+            sp.run(["launchctl", "unload", plist_path], capture_output=True)
+            os.remove(plist_path)
+            console.print(f"[green]Unloaded and removed {plist_path}[/green]")
+        else:
+            console.print("[dim]No plist found.[/dim]")
+        return
+
+    bin_path = shutil.which("dnomia-knowledge")
+    if not bin_path:
+        # Try venv
+        venv_bin = os.path.join(os.path.dirname(sys.executable), "dnomia-knowledge")
+        if os.path.exists(venv_bin):
+            bin_path = venv_bin
+        else:
+            console.print("[red]Could not find dnomia-knowledge binary.[/red]")
+            sys.exit(1)
+
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+
+    plist_content = _generate_plist(bin_path)
+
+    # Unload if existing
+    if os.path.exists(plist_path):
+        sp.run(["launchctl", "unload", plist_path], capture_output=True)
+
+    with open(plist_path, "w") as f:
+        f.write(plist_content)
+
+    sp.run(["launchctl", "load", plist_path], capture_output=True)
+    console.print(f"[green]Installed and loaded {plist_path}[/green]")
+    console.print(f"[dim]Logs: {log_dir}/index.log[/dim]")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnomia-knowledge",
@@ -586,6 +661,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_hooks = subparsers.add_parser("install-hooks", help="Install git post-commit hooks")
     p_hooks.add_argument("--uninstall", action="store_true", help="Remove hooks instead")
     p_hooks.set_defaults(func=cmd_install_hooks)
+
+    # install-launchd
+    p_launchd = subparsers.add_parser(
+        "install-launchd", help="Install launchd periodic indexing job"
+    )
+    p_launchd.add_argument("--uninstall", action="store_true", help="Remove launchd job")
+    p_launchd.set_defaults(func=cmd_install_launchd)
 
     return parser
 

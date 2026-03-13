@@ -294,3 +294,39 @@ class TestInstallHooks:
         installed = _install_hooks(store, bin_path="/usr/local/bin/dnomia-knowledge")
         assert installed == 0
         store.close()
+
+
+class TestInstallLaunchd:
+    def test_generate_plist(self):
+        from dnomia_knowledge.cli import _generate_plist
+
+        plist = _generate_plist("/path/to/bin/dnomia-knowledge")
+        assert "com.dnomia-knowledge.index" in plist
+        assert "/path/to/bin/dnomia-knowledge" in plist
+        assert "<integer>300</integer>" in plist
+        assert "index-all" in plist
+        assert "--changed" in plist
+
+    def test_install_launchd_creates_plist(self, tmp_dir):
+        from dnomia_knowledge.cli import _generate_plist
+
+        plist_content = _generate_plist("/path/to/bin/dnomia-knowledge")
+        plist_path = tmp_dir / "com.dnomia-knowledge.index.plist"
+        plist_path.write_text(plist_content)
+        assert plist_path.exists()
+        assert "<?xml" in plist_path.read_text()
+
+    def test_cli_parser_install_launchd(self):
+        from dnomia_knowledge.cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["install-launchd"])
+        assert args.command == "install-launchd"
+        assert args.uninstall is False
+
+    def test_cli_parser_uninstall_launchd(self):
+        from dnomia_knowledge.cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["install-launchd", "--uninstall"])
+        assert args.uninstall is True
