@@ -453,6 +453,106 @@ class Indexer:
         deleted = [rp for rp in stored_hashes if rp not in current_rel_paths]
         return changed, deleted
 
+    def index_all(
+        self,
+        changed_only: bool = False,
+        lock: bool = True,
+    ) -> list[IndexResult]:
+        """Index all registered projects. Returns list of IndexResult for indexed projects."""
+        if lock:
+            from dnomia_knowledge.lock import IndexLock
+
+            _lock = IndexLock()
+            if not _lock.acquire():
+                logger.info("Another index process is running, skipping.")
+                return []
+        else:
+            _lock = None
+
+        try:
+            projects = self.store.list_projects()
+            results = []
+
+            for proj in projects:
+                project_path = proj["path"]
+                project_id = proj["id"]
+
+                if not os.path.isdir(project_path):
+                    logger.warning(
+                        "Project directory missing, skipping: %s (%s)", project_id, project_path
+                    )
+                    continue
+
+                if changed_only and not self._project_has_changes(proj):
+                    logger.debug("No changes detected, skipping: %s", project_id)
+                    continue
+
+                try:
+                    from dnomia_knowledge.registry import load_config, default_config
+
+                    config = load_config(project_path)
+                    if config is None:
+                        config = default_config(project_path)
+
+                    result = self.index_directory(
+                        project_id=project_id,
+                        directory=project_path,
+                        incremental=True,
+                        config=config,
+                    )
+                    results.append(result)
+                    logger.info(
+                        "Indexed %s: %d files, %d chunks, %.1fs",
+                        project_id,
+                        result.indexed_files,
+                        result.total_chunks,
+                        result.duration_seconds,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to index %s: %s", project_id, e)
+
+            return results
+        finally:
+            if _lock:
+                _lock.release()
+
+    def _project_has_changes(self, proj: dict) -> bool:
+        """Check if project has changes since last index."""
+        project_path = proj["path"]
+        stored_commit = proj.get("last_indexed_commit")
+
+        # Try git HEAD comparison first
+        current_commit = _get_git_head(project_path)
+        if current_commit and stored_commit:
+            return current_commit != stored_commit
+        if current_commit and not stored_commit:
+            return True  # Never indexed with commit tracking
+
+        # Fallback: check file mtimes against last_indexed
+        last_indexed = proj.get("last_indexed")
+        if not last_indexed:
+            return True  # Never indexed
+
+        from datetime import datetime
+
+        try:
+            last_dt = datetime.fromisoformat(last_indexed)
+            last_ts = last_dt.timestamp()
+        except (ValueError, TypeError):
+            return True
+
+        # Recursive walk to catch nested changes (vault subdirs, etc.)
+        for root, _dirs, files in os.walk(project_path):
+            for fname in files:
+                try:
+                    fpath = os.path.join(root, fname)
+                    if os.stat(fpath).st_mtime > last_ts:
+                        return True
+                except OSError:
+                    continue
+
+        return False
+
     def _read_file(self, file_path: str) -> str | None:
         try:
             with open(file_path, encoding="utf-8", errors="replace") as f:

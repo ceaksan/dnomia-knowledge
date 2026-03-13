@@ -387,6 +387,33 @@ def cmd_rebuild_graph(args: argparse.Namespace) -> None:
     store.close()
 
 
+def cmd_index_all(args: argparse.Namespace) -> None:
+    """Index all registered projects."""
+    from dnomia_knowledge.embedder import Embedder
+    from dnomia_knowledge.indexer import Indexer
+    from dnomia_knowledge.store import Store
+
+    store = Store(_get_db_path())
+    embedder = Embedder()
+    indexer = Indexer(store, embedder)
+
+    results = indexer.index_all(changed_only=args.changed)
+
+    if not results:
+        if args.changed:
+            console.print("[dim]No projects with changes.[/dim]")
+        else:
+            console.print("[dim]No projects registered.[/dim]")
+    else:
+        for r in results:
+            console.print(
+                f"  [green]{r.project_id}[/green]: "
+                f"{r.indexed_files} files, {r.total_chunks} chunks, {r.duration_seconds}s"
+            )
+
+    store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnomia-knowledge",
@@ -399,6 +426,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("path", help="Project root directory path")
     p_index.add_argument("--full", action="store_true", help="Full reindex (ignore cache)")
     p_index.set_defaults(func=cmd_index)
+
+    # index-all
+    p_index_all = subparsers.add_parser("index-all", help="Index all registered projects")
+    p_index_all.add_argument(
+        "--changed", action="store_true", help="Only index projects with changes"
+    )
+    p_index_all.set_defaults(func=cmd_index_all)
 
     # search
     p_search = subparsers.add_parser("search", help="Search indexed projects")
