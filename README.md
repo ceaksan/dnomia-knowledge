@@ -104,6 +104,55 @@ for r in results:
 store.close()
 ```
 
+## Continuous Indexing
+
+Automatic index updates via git post-commit hooks and launchd periodic job. No daemon, no extra dependencies, no persistent memory usage.
+
+### Setup
+
+```bash
+# Install git hooks on all indexed projects
+dnomia-knowledge install-hooks
+
+# Install launchd periodic job (every 5 min)
+dnomia-knowledge install-launchd
+```
+
+### How it works
+
+- **Git hooks**: After every commit, the changed project is re-indexed in the background
+- **launchd job**: Every 5 minutes, checks all registered projects for changes and re-indexes if needed
+- **File lock**: Only one index process runs at a time (prevents OOM from concurrent embedding model loads)
+- **Change detection**: Git HEAD hash comparison for git projects, recursive mtime scan for non-git directories (Obsidian vault)
+
+### CLI Commands
+
+```bash
+# Index all registered projects
+dnomia-knowledge index-all
+
+# Only index projects with changes since last index
+dnomia-knowledge index-all --changed
+
+# Install/remove git post-commit hooks
+dnomia-knowledge install-hooks
+dnomia-knowledge install-hooks --uninstall
+
+# Install/remove launchd periodic job
+dnomia-knowledge install-launchd
+dnomia-knowledge install-launchd --uninstall
+```
+
+### Verify
+
+```bash
+# Check launchd is running
+launchctl list | grep dnomia-knowledge
+
+# Check logs
+tail -f ~/.local/share/dnomia-knowledge/index.log
+```
+
 ## Technical Details
 
 - **DB**: SQLite + FTS5 (BM25 keyword) + sqlite-vec (cosine KNN)
