@@ -281,6 +281,10 @@ class Indexer:
             except Exception as e:
                 logger.warning("Graph building failed: %s", e)
 
+        # Update last_indexed
+        commit_hash = _get_git_head(project_path)
+        self.store.update_project_last_indexed(project_id, commit_hash=commit_hash)
+
         duration = time.time() - start_time
         return IndexResult(
             project_id=project_id,
@@ -464,6 +468,25 @@ def _compute_file_hash(file_path: str) -> str:
             return hashlib.md5(f.read()).hexdigest()  # noqa: S324
     except Exception:
         return ""
+
+
+def _get_git_head(directory: str) -> str | None:
+    """Get current git HEAD commit hash, or None if not a git repo."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
 
 
 def _serialize_metadata(meta: dict | None) -> str | None:
