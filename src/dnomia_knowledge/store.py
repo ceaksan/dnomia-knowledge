@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS projects (
     type TEXT NOT NULL,
     graph_enabled INTEGER DEFAULT 0,
     last_indexed TEXT,
+    last_indexed_commit TEXT,
     config_hash TEXT
 );
 
@@ -155,6 +156,11 @@ class Store:
     def _init_db(self) -> None:
         conn = self._connect()
         conn.executescript(_TABLES_SQL)
+        # Add column if not exists (migration for existing DBs)
+        try:
+            conn.execute("ALTER TABLE projects ADD COLUMN last_indexed_commit TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         conn.executescript(_FTS_SQL)
         conn.executescript(_TRIGGERS_SQL)
         conn.execute(
@@ -207,6 +213,21 @@ class Store:
         conn = self._connect()
         rows = conn.execute("SELECT * FROM projects ORDER BY id").fetchall()
         return [dict(r) for r in rows]
+
+    def update_project_last_indexed(self, project_id: str, commit_hash: str | None = None) -> None:
+        """Update last_indexed timestamp and optionally commit hash."""
+        conn = self._connect()
+        if commit_hash:
+            conn.execute(
+                "UPDATE projects SET last_indexed = datetime('now'), last_indexed_commit = ? WHERE id = ?",
+                (commit_hash, project_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE projects SET last_indexed = datetime('now') WHERE id = ?",
+                (project_id,),
+            )
+        conn.commit()
 
     # -- Chunks --
 
