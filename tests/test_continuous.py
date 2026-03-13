@@ -330,3 +330,53 @@ class TestInstallLaunchd:
         parser = build_parser()
         args = parser.parse_args(["install-launchd", "--uninstall"])
         assert args.uninstall is True
+
+
+class TestIntegration:
+    def test_full_flow_index_commit_reindex(
+        self, db_path, shared_embedder, tmp_dir, sample_markdown
+    ):
+        """Full flow: index -> commit -> index-all --changed detects change."""
+        from dnomia_knowledge.indexer import Indexer
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+        indexer = Indexer(store, shared_embedder)
+
+        proj = tmp_dir / "proj"
+        proj.mkdir()
+        (proj / "post.md").write_text(sample_markdown)
+
+        subprocess.run(["git", "init"], cwd=str(proj), capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "t@t.com"], cwd=str(proj), capture_output=True
+        )
+        subprocess.run(["git", "config", "user.name", "T"], cwd=str(proj), capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=str(proj), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(proj), capture_output=True)
+
+        # Initial index
+        indexer.index_directory("proj", str(proj))
+        proj_data = store.get_project("proj")
+        assert proj_data["last_indexed"] is not None
+        assert proj_data["last_indexed_commit"] is not None
+        initial_commit = proj_data["last_indexed_commit"]
+
+        # No changes: index-all --changed should skip
+        results = indexer.index_all(changed_only=True, lock=False)
+        assert len(results) == 0
+
+        # Make a change and commit
+        (proj / "post.md").write_text("## Changed\n\nNew content for the post.")
+        subprocess.run(["git", "add", "."], cwd=str(proj), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "update"], cwd=str(proj), capture_output=True)
+
+        # Now index-all --changed should pick it up
+        results = indexer.index_all(changed_only=True, lock=False)
+        assert len(results) == 1
+        assert results[0].project_id == "proj"
+
+        # Verify commit hash updated
+        proj_data = store.get_project("proj")
+        assert proj_data["last_indexed_commit"] != initial_commit
+        store.close()
