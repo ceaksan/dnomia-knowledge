@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -414,6 +415,119 @@ def cmd_index_all(args: argparse.Namespace) -> None:
     store.close()
 
 
+HOOK_START_MARKER = "# --- dnomia-knowledge-start ---"
+HOOK_END_MARKER = "# --- dnomia-knowledge-end ---"
+
+
+def _get_hook_block(bin_path: str) -> str:
+    return (
+        f"{HOOK_START_MARKER}\n"
+        f'DNOMIA_BIN="{bin_path}"\n'
+        f'if [ -x "$DNOMIA_BIN" ]; then\n'
+        f"  (\n"
+        f"    mkdir /tmp/dnomia-knowledge.lock 2>/dev/null || exit 0\n"
+        f"    trap 'rmdir /tmp/dnomia-knowledge.lock' EXIT\n"
+        f'    "$DNOMIA_BIN" index "$(git rev-parse --show-toplevel)" >/dev/null 2>&1\n'
+        f"  ) &\n"
+        f"fi\n"
+        f"{HOOK_END_MARKER}\n"
+    )
+
+
+def _install_hooks(store, bin_path: str | None = None) -> int:
+    """Install post-commit hooks to all registered git projects. Returns count installed."""
+    if bin_path is None:
+        import shutil
+
+        bin_path = shutil.which("dnomia-knowledge") or sys.executable.replace(
+            "python", "dnomia-knowledge"
+        )
+
+    projects = store.list_projects()
+    installed = 0
+
+    for proj in projects:
+        project_path = Path(proj["path"])
+        git_dir = project_path / ".git"
+        if not git_dir.is_dir():
+            continue
+
+        hooks_dir = git_dir / "hooks"
+        hooks_dir.mkdir(exist_ok=True)
+        hook_path = hooks_dir / "post-commit"
+
+        hook_block = _get_hook_block(bin_path)
+
+        if hook_path.exists():
+            existing = hook_path.read_text()
+            if HOOK_START_MARKER in existing:
+                continue  # Already installed
+            new_content = existing.rstrip("\n") + "\n\n" + hook_block
+        else:
+            new_content = "#!/bin/sh\n\n" + hook_block
+
+        hook_path.write_text(new_content)
+        hook_path.chmod(0o755)
+        installed += 1
+
+    return installed
+
+
+def _uninstall_hooks(store) -> int:
+    """Remove dnomia-knowledge blocks from all post-commit hooks. Returns count removed."""
+    projects = store.list_projects()
+    removed = 0
+
+    for proj in projects:
+        project_path = Path(proj["path"])
+        hook_path = project_path / ".git" / "hooks" / "post-commit"
+        if not hook_path.exists():
+            continue
+
+        content = hook_path.read_text()
+        if HOOK_START_MARKER not in content:
+            continue
+
+        # Remove the block
+        lines = content.split("\n")
+        new_lines = []
+        skip = False
+        for line in lines:
+            if line.strip() == HOOK_START_MARKER.strip():
+                skip = True
+                continue
+            if line.strip() == HOOK_END_MARKER.strip():
+                skip = False
+                continue
+            if not skip:
+                new_lines.append(line)
+
+        new_content = "\n".join(new_lines).strip()
+        if new_content and new_content != "#!/bin/sh":
+            hook_path.write_text(new_content + "\n")
+        else:
+            hook_path.unlink()
+        removed += 1
+
+    return removed
+
+
+def cmd_install_hooks(args: argparse.Namespace) -> None:
+    """Install or uninstall git post-commit hooks."""
+    from dnomia_knowledge.store import Store
+
+    store = Store(_get_db_path())
+
+    if args.uninstall:
+        count = _uninstall_hooks(store)
+        console.print(f"[green]Removed hooks from {count} projects.[/green]")
+    else:
+        count = _install_hooks(store)
+        console.print(f"[green]Installed hooks in {count} projects.[/green]")
+
+    store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnomia-knowledge",
@@ -467,6 +581,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_graph = subparsers.add_parser("rebuild-graph", help="Rebuild knowledge graph")
     p_graph.add_argument("project_id", help="Project ID")
     p_graph.set_defaults(func=cmd_rebuild_graph)
+
+    # install-hooks
+    p_hooks = subparsers.add_parser("install-hooks", help="Install git post-commit hooks")
+    p_hooks.add_argument("--uninstall", action="store_true", help="Remove hooks instead")
+    p_hooks.set_defaults(func=cmd_install_hooks)
 
     return parser
 

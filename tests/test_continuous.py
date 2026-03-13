@@ -182,3 +182,115 @@ class TestCLIParser:
         parser = build_parser()
         args = parser.parse_args(["index-all", "--changed"])
         assert args.changed is True
+
+
+class TestInstallHooks:
+    def test_install_hooks_creates_hook(self, db_path, tmp_dir, sample_markdown):
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+
+        # Create a git project
+        proj = tmp_dir / "proj"
+        proj.mkdir()
+        (proj / "post.md").write_text(sample_markdown)
+        subprocess.run(["git", "init"], cwd=str(proj), capture_output=True)
+
+        store.register_project("proj", str(proj), "content")
+
+        from dnomia_knowledge.cli import _install_hooks
+
+        installed = _install_hooks(store, bin_path="/usr/local/bin/dnomia-knowledge")
+
+        hook_path = proj / ".git" / "hooks" / "post-commit"
+        assert hook_path.exists()
+        content = hook_path.read_text()
+        assert "dnomia-knowledge-start" in content
+        assert "dnomia-knowledge-end" in content
+        assert installed == 1
+        store.close()
+
+    def test_install_hooks_idempotent(self, db_path, tmp_dir, sample_markdown):
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+
+        proj = tmp_dir / "proj"
+        proj.mkdir()
+        (proj / "post.md").write_text(sample_markdown)
+        subprocess.run(["git", "init"], cwd=str(proj), capture_output=True)
+        store.register_project("proj", str(proj), "content")
+
+        from dnomia_knowledge.cli import _install_hooks
+
+        _install_hooks(store, bin_path="/usr/local/bin/dnomia-knowledge")
+        _install_hooks(store, bin_path="/usr/local/bin/dnomia-knowledge")
+
+        hook_path = proj / ".git" / "hooks" / "post-commit"
+        content = hook_path.read_text()
+        # Should appear only once
+        assert content.count("dnomia-knowledge-start") == 1
+        store.close()
+
+    def test_install_hooks_chains_existing(self, db_path, tmp_dir, sample_markdown):
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+
+        proj = tmp_dir / "proj"
+        proj.mkdir()
+        (proj / "post.md").write_text(sample_markdown)
+        subprocess.run(["git", "init"], cwd=str(proj), capture_output=True)
+
+        # Pre-existing hook
+        hook_path = proj / ".git" / "hooks" / "post-commit"
+        hook_path.write_text("#!/bin/sh\necho 'existing hook'\n")
+        hook_path.chmod(0o755)
+
+        store.register_project("proj", str(proj), "content")
+
+        from dnomia_knowledge.cli import _install_hooks
+
+        _install_hooks(store, bin_path="/usr/local/bin/dnomia-knowledge")
+
+        content = hook_path.read_text()
+        assert "existing hook" in content
+        assert "dnomia-knowledge-start" in content
+        store.close()
+
+    def test_uninstall_hooks(self, db_path, tmp_dir, sample_markdown):
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+
+        proj = tmp_dir / "proj"
+        proj.mkdir()
+        (proj / "post.md").write_text(sample_markdown)
+        subprocess.run(["git", "init"], cwd=str(proj), capture_output=True)
+        store.register_project("proj", str(proj), "content")
+
+        from dnomia_knowledge.cli import _install_hooks, _uninstall_hooks
+
+        _install_hooks(store, bin_path="/usr/local/bin/dnomia-knowledge")
+        removed = _uninstall_hooks(store)
+
+        hook_path = proj / ".git" / "hooks" / "post-commit"
+        if hook_path.exists():
+            content = hook_path.read_text()
+            assert "dnomia-knowledge-start" not in content
+        assert removed == 1
+        store.close()
+
+    def test_install_hooks_skips_non_git(self, db_path, tmp_dir):
+        from dnomia_knowledge.store import Store
+
+        store = Store(db_path)
+        proj = tmp_dir / "proj"
+        proj.mkdir()
+        store.register_project("proj", str(proj), "content")
+
+        from dnomia_knowledge.cli import _install_hooks
+
+        installed = _install_hooks(store, bin_path="/usr/local/bin/dnomia-knowledge")
+        assert installed == 0
+        store.close()
