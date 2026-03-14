@@ -153,6 +153,37 @@ launchctl list | grep dnomia-knowledge
 tail -f ~/.local/share/dnomia-knowledge/index.log
 ```
 
+## Trace Analytics
+
+Usage pattern analysis from accumulated interaction and search data. Requires no extra setup: data is collected automatically as you use search and read/edit files.
+
+```bash
+# Most accessed files
+dnomia-knowledge trace hot
+
+# Searches that returned no results (knowledge gaps)
+dnomia-knowledge trace gaps
+
+# Files with declining activity
+dnomia-knowledge trace decay
+
+# Most frequent search patterns
+dnomia-knowledge trace queries
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project` / `-p` | all | Filter by project ID |
+| `--days` / `-d` | 30 | Time window in days |
+| `--limit` / `-l` | 20 | Max rows to display |
+
+```bash
+# Last 7 days, specific project, top 5
+dnomia-knowledge trace hot -p my-project -d 7 -l 5
+```
+
 ## Technical Details
 
 - **DB**: SQLite + FTS5 (BM25 keyword) + sqlite-vec (cosine KNN)
@@ -161,6 +192,7 @@ tail -f ~/.local/share/dnomia-knowledge/index.log
 - **Chunking**: `##`/`###` heading split, frontmatter parsing, min 200 char merge, overlap support
 - **Incremental**: MD5 content hash for change detection
 - **Memory**: Lazy model loading, explicit unload, runs on 8GB RAM
+- **Schema**: v2, auto-migrates from v1 on first run
 
 ## Testing
 

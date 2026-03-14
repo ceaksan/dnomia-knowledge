@@ -47,7 +47,7 @@ src/dnomia_knowledge/
 ├── search.py          # Hybrid FTS5+vector, RRF merge, interaction boost, cross-project
 ├── graph.py           # Edge builder (link/tag/category/semantic/import), Louvain, PageRank
 ├── lock.py            # fcntl file lock for preventing concurrent index runs
-├── cli.py             # Rich CLI: index, search, graph, install-hooks, install-launchd
+├── cli.py             # Rich CLI: index, search, graph, trace, install-hooks, install-launchd
 ├── registry.py        # .knowledge.toml config loader, Pydantic v2 schema
 ├── presets.py         # Extension presets (web, python, django, mixed)
 ├── models.py          # Shared dataclasses (Chunk, SearchResult, IndexResult)
@@ -108,6 +108,17 @@ Query text
   → Return top N with snippets
 ```
 
+### Trace Analytics
+
+```
+chunk_interactions + search_log (accumulated over time)
+  → trace hot:     GROUP BY (project_id, file_path), count R/E/S interactions
+  → trace gaps:    search_log WHERE result_count = 0, GROUP BY query
+  → trace decay:   compare interaction counts between two time windows
+  → trace queries: GROUP BY query, AVG result_count
+  → CLI Rich table output
+```
+
 ### Continuous Indexing
 
 ```
@@ -151,6 +162,7 @@ dnomia-knowledge index-all [--changed]     # Index all registered projects
 dnomia-knowledge install-hooks             # Git post-commit hooks
 dnomia-knowledge install-launchd           # macOS periodic job (5min)
 dnomia-knowledge export                    # CSV export of chunks
+dnomia-knowledge trace hot|gaps|decay|queries  # Usage analytics
 ```
 
 ## Data Model
@@ -163,7 +175,7 @@ dnomia-knowledge export                    # CSV export of chunks
 | `chunks_fts` | Full-text index (FTS5 virtual) | content mirror, BM25 ranking |
 | `file_index` | Per-file tracking for incremental indexing | project_id, file_path, file_hash (MD5), chunk_count, last_indexed |
 | `edges` | Knowledge graph relationships | source_id, target_id, edge_type (link/tag/category/semantic/import), weight, metadata |
-| `chunk_interactions` | Usage tracking for search ranking | chunk_id, interaction (read/edit/search_hit), source_tool, timestamp |
+| `chunk_interactions` | Usage tracking for search ranking + trace analytics | chunk_id, project_id, file_path, interaction (read/edit/search_hit), source_tool, timestamp |
 | `search_log` | Query analytics | query, project_id, domain, result_chunk_ids, result_count, timestamp |
 | `system_metadata` | Global config | embedding_model, embedding_dim, schema_version |
 
@@ -176,6 +188,10 @@ dnomia-knowledge export                    # CSV export of chunks
 - `chunks(project_id, file_path)` for file-level lookups
 - `file_index(project_id, file_path)` UNIQUE for incremental detection
 - `edges(source_id)`, `edges(target_id)` for graph traversal
+- `chunk_interactions(project_id, timestamp)` for trace queries
+- `chunk_interactions(project_id, file_path)` for file-level aggregation
+- `search_log(result_count, timestamp)` for knowledge gaps
+- `search_log(query)` for query pattern analysis
 
 ## Configuration & Environment
 
@@ -234,6 +250,8 @@ max_file_size_kb = 500
 | git hooks + launchd (not watchdog) | No persistent process, no memory overhead | Max 5-min staleness between commits, not sub-second |
 | mkdir lock (shell) + fcntl (Python) | macOS has no flock command, mkdir is atomic POSIX | Two separate lock mechanisms, stale mkdir lock blocks until reboot |
 | Heading-based markdown chunking | Natural semantic boundaries | Very short sections get merged (min 200 char), loses granularity |
+| chunk_interactions without CASCADE FK | Interactions survive re-indexing for trace analytics | Orphaned interactions accumulate until gc cleanup |
+| Denormalized project_id/file_path in interactions | Trace queries group by file identity, not chunk_id | ~20 bytes extra per interaction row |
 
 ## Known Tech Debt
 
@@ -250,6 +268,8 @@ max_file_size_kb = 500
 - `chunks_vec` cleanup relies on SQLite trigger (no explicit vector garbage collection)
 - CLI export command outputs flat CSV, no graph edge export
 - No search result pagination (returns all results up to limit)
+- Trace query grouping is case-sensitive (exact match, no semantic clustering)
+- Interaction type strings ("read", "edit", "search_hit") not defined as constants
 
 ## Code Hotspots
 
