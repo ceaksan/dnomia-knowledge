@@ -130,8 +130,10 @@ CREATE INDEX IF NOT EXISTS idx_interactions_chunk ON chunk_interactions(chunk_id
 CREATE INDEX IF NOT EXISTS idx_interactions_ts ON chunk_interactions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_interactions_project ON chunk_interactions(project_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_file ON chunk_interactions(project_id, file_path);
+CREATE INDEX IF NOT EXISTS idx_interactions_proj_ts ON chunk_interactions(project_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_search_log_query ON search_log(query);
 CREATE INDEX IF NOT EXISTS idx_search_log_result_count ON search_log(result_count);
+CREATE INDEX IF NOT EXISTS idx_search_log_result_ts ON search_log(result_count, timestamp);
 """
 
 _DEFAULT_EMBEDDING_DIM = 768
@@ -714,6 +716,23 @@ class Store:
 
     # -- Trace Aggregations --
 
+    @staticmethod
+    def _trace_filter(
+        days: int,
+        project_id: str | None,
+        limit: int,
+        ts_col: str = "timestamp",
+        proj_col: str = "project_id",
+    ) -> tuple[str, list]:
+        """Build WHERE clause and params for trace queries."""
+        params: list = [f"-{int(days)} days"]
+        parts = [f"{ts_col} >= datetime('now', ?)"]
+        if project_id:
+            parts.append(f"{proj_col} = ?")
+            params.append(project_id)
+        params.append(limit)
+        return " AND ".join(parts), params
+
     def get_hot_chunks(
         self,
         project_id: str | None = None,
@@ -722,16 +741,9 @@ class Store:
     ) -> list[dict]:
         """Most interacted files, grouped by (project_id, file_path)."""
         conn = self._connect()
-        params: list = []
-        where_parts = ["ci.timestamp >= datetime('now', ?)"]
-        params.append(f"-{int(days)} days")
-
-        if project_id:
-            where_parts.append("ci.project_id = ?")
-            params.append(project_id)
-
-        where_sql = " AND ".join(where_parts)
-        params.append(limit)
+        where_sql, params = self._trace_filter(
+            days, project_id, limit, ts_col="ci.timestamp", proj_col="ci.project_id"
+        )
 
         sql = f"""
             SELECT ci.project_id, ci.file_path,
@@ -759,19 +771,8 @@ class Store:
     ) -> list[dict]:
         """Searches that returned 0 results, grouped by query."""
         conn = self._connect()
-        params: list = []
-        where_parts = [
-            "result_count = 0",
-            "timestamp >= datetime('now', ?)",
-        ]
-        params.append(f"-{int(days)} days")
-
-        if project_id:
-            where_parts.append("project_id = ?")
-            params.append(project_id)
-
-        where_sql = " AND ".join(where_parts)
-        params.append(limit)
+        where_sql, params = self._trace_filter(days, project_id, limit)
+        where_sql = "result_count = 0 AND " + where_sql
 
         sql = f"""
             SELECT query,
@@ -842,16 +843,7 @@ class Store:
     ) -> list[dict]:
         """Most frequent search queries."""
         conn = self._connect()
-        params: list = []
-        where_parts = ["timestamp >= datetime('now', ?)"]
-        params.append(f"-{int(days)} days")
-
-        if project_id:
-            where_parts.append("project_id = ?")
-            params.append(project_id)
-
-        where_sql = " AND ".join(where_parts)
-        params.append(limit)
+        where_sql, params = self._trace_filter(days, project_id, limit)
 
         sql = f"""
             SELECT query,

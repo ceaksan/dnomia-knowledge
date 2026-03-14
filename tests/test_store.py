@@ -658,15 +658,13 @@ def _seed_interactions(store, project_id="test"):
         ],
     )
     # auth.py: 5 reads, 2 edits, 3 search_hits = 10 total
-    for _ in range(5):
-        store.log_interaction(ids[0], "read", "Read", project_id, "auth.py")
-    for _ in range(2):
-        store.log_interaction(ids[0], "edit", "Edit", project_id, "auth.py")
-    for _ in range(3):
-        store.log_interaction(ids[0], "search_hit", "search", project_id, "auth.py")
     # db.py: 2 reads = 2 total
-    for _ in range(2):
-        store.log_interaction(ids[1], "read", "Read", project_id, "db.py")
+    store.batch_log_interactions(
+        [(ids[0], "read", "Read", project_id, "auth.py")] * 5
+        + [(ids[0], "edit", "Edit", project_id, "auth.py")] * 2
+        + [(ids[0], "search_hit", "search", project_id, "auth.py")] * 3
+        + [(ids[1], "read", "Read", project_id, "db.py")] * 2
+    )
 
     # Search logs: "jwt auth" found 3 times, "websocket" not found 2 times
     store.log_search("jwt auth", project_id, "all", [ids[0]], 1)
