@@ -50,7 +50,7 @@ class TestStoreInit:
             "SELECT value FROM system_metadata WHERE key = 'schema_version'"
         ).fetchone()
         assert row is not None
-        assert row[0] == "1"
+        assert row[0] == "2"
 
 
 class TestProjectCRUD:
@@ -389,7 +389,7 @@ class TestEdgeCRUD:
 class TestInteractionCRUD:
     def test_log_interaction(self, db_path):
         store, ids = _setup_project_with_chunks(db_path)
-        store.log_interaction(ids[0], "read", "Read")
+        store.log_interaction(ids[0], "read", "Read", project_id="test", file_path="file0.md")
         conn = store._connect()
         row = conn.execute(
             "SELECT * FROM chunk_interactions WHERE chunk_id = ?", (ids[0],)
@@ -397,6 +397,20 @@ class TestInteractionCRUD:
         assert row is not None
         assert row["interaction"] == "read"
         assert row["source_tool"] == "Read"
+        assert row["project_id"] == "test"
+        assert row["file_path"] == "file0.md"
+
+    def test_log_interaction_without_file_info(self, db_path):
+        """log_interaction should work without project_id/file_path (backward compat)."""
+        store, ids = _setup_project_with_chunks(db_path)
+        store.log_interaction(ids[0], "read", "Read")
+        conn = store._connect()
+        row = conn.execute(
+            "SELECT * FROM chunk_interactions WHERE chunk_id = ?", (ids[0],)
+        ).fetchone()
+        assert row is not None
+        assert row["project_id"] is None
+        assert row["file_path"] is None
 
     def test_get_interaction_counts(self, db_path):
         store, ids = _setup_project_with_chunks(db_path)
@@ -562,3 +576,72 @@ class TestFileChunkQueries:
         store.register_project("test", "/tmp/test", "content")
         line_count = store.get_file_line_count("test", "nonexistent.py")
         assert line_count is None
+
+
+class TestInteractionSurvival:
+    def test_interactions_survive_reindex(self, db_path):
+        """Interactions should not be deleted when chunks are re-indexed."""
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        ids = store.insert_chunks(
+            "test",
+            [{"file_path": "a.md", "content": "old content", "name": "Introduction"}],
+        )
+        store.log_interaction(ids[0], "read", "Read", project_id="test", file_path="a.md")
+        store.log_interaction(ids[0], "read", "Read", project_id="test", file_path="a.md")
+
+        # Simulate re-index: delete old chunks, insert new
+        store.delete_file_chunks("test", "a.md")
+        store.insert_chunks(
+            "test",
+            [{"file_path": "a.md", "content": "new content", "name": "Introduction"}],
+        )
+
+        # Old interactions should still exist (keyed by project_id + file_path)
+        conn = store._connect()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM chunk_interactions WHERE project_id = ? AND file_path = ?",
+            ("test", "a.md"),
+        ).fetchone()[0]
+        assert count == 2
+
+    def test_orphaned_interactions_cleaned_by_gc(self, db_path):
+        """gc should remove interactions whose chunk_id no longer exists."""
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        ids = store.insert_chunks(
+            "test",
+            [{"file_path": "a.md", "content": "content"}],
+        )
+        store.log_interaction(ids[0], "read", "Read", project_id="test", file_path="a.md")
+        store.delete_file_chunks("test", "a.md")
+
+        # Interaction exists but chunk is gone
+        conn = store._connect()
+        count_before = conn.execute("SELECT COUNT(*) FROM chunk_interactions").fetchone()[0]
+        assert count_before == 1
+
+        cleaned = store.clean_orphaned_interactions()
+        assert cleaned == 1
+
+        count_after = conn.execute("SELECT COUNT(*) FROM chunk_interactions").fetchone()[0]
+        assert count_after == 0
+
+    def test_batch_log_interactions_with_file_info(self, db_path):
+        """batch_log_interactions should accept and store project_id/file_path."""
+        store, ids = _setup_project_with_chunks(db_path)
+        store.batch_log_interactions(
+            [
+                (ids[0], "read", "Read", "test", "file0.md"),
+                (ids[1], "edit", "Edit", "test", "file1.md"),
+            ]
+        )
+        conn = store._connect()
+        rows = conn.execute(
+            "SELECT chunk_id, project_id, file_path, interaction "
+            "FROM chunk_interactions ORDER BY chunk_id"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["project_id"] == "test"
+        assert rows[0]["file_path"] == "file0.md"
+        assert rows[1]["interaction"] == "edit"

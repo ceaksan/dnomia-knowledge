@@ -82,8 +82,10 @@ def main() -> None:
                 return
 
             interaction = "read" if tool_name == "Read" else "edit"
-            for chunk_id in chunk_ids:
-                store.log_interaction(chunk_id, interaction, f"hook:{tool_name}")
+            batch = [
+                (cid, interaction, f"hook:{tool_name}", project_id, rel_path) for cid in chunk_ids
+            ]
+            store.batch_log_interactions(batch)
         finally:
             store.close()
 

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-
 import sqlite3
 from pathlib import Path
 
 import sqlite_vec
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _PRAGMAS = [
     "PRAGMA journal_mode = WAL",
@@ -75,7 +74,9 @@ CREATE TABLE IF NOT EXISTS search_log (
 
 CREATE TABLE IF NOT EXISTS chunk_interactions (
     id INTEGER PRIMARY KEY,
-    chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+    chunk_id INTEGER NOT NULL,
+    project_id TEXT,
+    file_path TEXT,
     interaction TEXT NOT NULL,
     source_tool TEXT,
     timestamp TEXT DEFAULT (datetime('now'))
@@ -127,6 +128,10 @@ CREATE INDEX IF NOT EXISTS idx_search_log_project ON search_log(project_id);
 CREATE INDEX IF NOT EXISTS idx_search_log_ts ON search_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_interactions_chunk ON chunk_interactions(chunk_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_ts ON chunk_interactions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_interactions_project ON chunk_interactions(project_id);
+CREATE INDEX IF NOT EXISTS idx_interactions_file ON chunk_interactions(project_id, file_path);
+CREATE INDEX IF NOT EXISTS idx_search_log_query ON search_log(query);
+CREATE INDEX IF NOT EXISTS idx_search_log_result_count ON search_log(result_count);
 """
 
 _DEFAULT_EMBEDDING_DIM = 768
@@ -156,11 +161,56 @@ class Store:
     def _init_db(self) -> None:
         conn = self._connect()
         conn.executescript(_TABLES_SQL)
-        # Add column if not exists (migration for existing DBs)
+        # Migration v1: add last_indexed_commit column
         try:
             conn.execute("ALTER TABLE projects ADD COLUMN last_indexed_commit TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        # Migration v2: recreate chunk_interactions without CASCADE, add project_id/file_path
+        has_project_col = any(
+            row[1] == "project_id"
+            for row in conn.execute("PRAGMA table_info(chunk_interactions)").fetchall()
+        )
+        if not has_project_col:
+            conn.executescript("""
+                CREATE TABLE chunk_interactions_new (
+                    id INTEGER PRIMARY KEY,
+                    chunk_id INTEGER NOT NULL,
+                    project_id TEXT,
+                    file_path TEXT,
+                    interaction TEXT NOT NULL,
+                    source_tool TEXT,
+                    timestamp TEXT DEFAULT (datetime('now'))
+                );
+                INSERT INTO chunk_interactions_new
+                    (id, chunk_id, interaction, source_tool, timestamp)
+                SELECT id, chunk_id, interaction, source_tool, timestamp
+                FROM chunk_interactions;
+                DROP TABLE chunk_interactions;
+                ALTER TABLE chunk_interactions_new
+                    RENAME TO chunk_interactions;
+            """)
+            # Backfill project_id/file_path from chunks table
+            conn.execute("""
+                UPDATE chunk_interactions SET
+                    project_id = (
+                        SELECT c.project_id FROM chunks c
+                        WHERE c.id = chunk_interactions.chunk_id
+                    ),
+                    file_path = (
+                        SELECT c.file_path FROM chunks c
+                        WHERE c.id = chunk_interactions.chunk_id
+                    )
+                WHERE project_id IS NULL
+                    AND chunk_id IN (SELECT id FROM chunks)
+            """)
+            # Clean orphaned interactions (chunks already deleted by old CASCADE)
+            conn.execute(
+                "DELETE FROM chunk_interactions WHERE chunk_id NOT IN (SELECT id FROM chunks)"
+            )
+            conn.commit()
+
         conn.executescript(_FTS_SQL)
         conn.executescript(_TRIGGERS_SQL)
         conn.execute(
@@ -171,7 +221,8 @@ class Store:
         )
         conn.executescript(_INDEXES_SQL)
         conn.execute(
-            "INSERT OR IGNORE INTO system_metadata (key, value) VALUES ('schema_version', ?)",
+            "INSERT INTO system_metadata (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (SCHEMA_VERSION,),
         )
         conn.commit()
@@ -563,22 +614,38 @@ class Store:
 
     # -- Chunk Interactions --
 
-    def log_interaction(self, chunk_id: int, interaction: str, source_tool: str) -> None:
+    def log_interaction(
+        self,
+        chunk_id: int,
+        interaction: str,
+        source_tool: str,
+        project_id: str | None = None,
+        file_path: str | None = None,
+    ) -> None:
         """Log a chunk interaction (read, edit, search_hit)."""
         conn = self._connect()
         conn.execute(
-            "INSERT INTO chunk_interactions (chunk_id, interaction, source_tool) VALUES (?, ?, ?)",
-            (chunk_id, interaction, source_tool),
+            "INSERT INTO chunk_interactions "
+            "(chunk_id, project_id, file_path, interaction, source_tool) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (chunk_id, project_id, file_path, interaction, source_tool),
         )
         conn.commit()
 
-    def batch_log_interactions(self, interactions: list[tuple[int, str, str]]) -> None:
-        """Batch log interactions in a single transaction."""
+    def batch_log_interactions(
+        self, interactions: list[tuple[int, str, str, str | None, str | None]]
+    ) -> None:
+        """Batch log interactions.
+
+        Tuples: (chunk_id, interaction, source_tool, project_id, file_path).
+        """
         if not interactions:
             return
         conn = self._connect()
         conn.executemany(
-            "INSERT INTO chunk_interactions (chunk_id, interaction, source_tool) VALUES (?, ?, ?)",
+            "INSERT INTO chunk_interactions "
+            "(chunk_id, interaction, source_tool, project_id, file_path) "
+            "VALUES (?, ?, ?, ?, ?)",
             interactions,
         )
         conn.commit()
@@ -632,6 +699,15 @@ class Store:
         cursor = conn.execute(
             "DELETE FROM chunk_interactions WHERE timestamp < datetime('now', ?)",
             (f"-{int(days)} days",),
+        )
+        conn.commit()
+        return cursor.rowcount
+
+    def clean_orphaned_interactions(self) -> int:
+        """Remove interactions whose chunk_id no longer exists in chunks table."""
+        conn = self._connect()
+        cursor = conn.execute(
+            "DELETE FROM chunk_interactions WHERE chunk_id NOT IN (SELECT id FROM chunks)"
         )
         conn.commit()
         return cursor.rowcount

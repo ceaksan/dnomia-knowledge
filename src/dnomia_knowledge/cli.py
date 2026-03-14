@@ -334,6 +334,10 @@ def cmd_gc(args: argparse.Namespace) -> None:
     else:
         console.print("[dim]No orphan data found.[/dim]")
 
+    orphaned = store.clean_orphaned_interactions()
+    if orphaned:
+        console.print(f"[green]Cleaned {orphaned} orphaned interactions.[/green]")
+
     if args.full:
         interactions_deleted = store.delete_old_interactions(90)
         logs_deleted = store.delete_old_search_logs(90)

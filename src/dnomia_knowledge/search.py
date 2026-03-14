@@ -130,7 +130,9 @@ class HybridSearch:
         try:
             chunk_ids = [r.chunk_id for r in results]
             self._store.log_search(query, project_id, domain, chunk_ids, len(results))
-            self._store.batch_log_interactions([(cid, "search_hit", "search") for cid in chunk_ids])
+            self._store.batch_log_interactions(
+                [(r.chunk_id, "search_hit", "search", r.project_id, r.file_path) for r in results]
+            )
         except Exception:
             logger.debug("Failed to log search results", exc_info=True)
 
