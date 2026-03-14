@@ -645,3 +645,122 @@ class TestInteractionSurvival:
         assert rows[0]["project_id"] == "test"
         assert rows[0]["file_path"] == "file0.md"
         assert rows[1]["interaction"] == "edit"
+
+
+def _seed_interactions(store, project_id="test"):
+    """Seed interaction and search data for trace tests."""
+    store.register_project(project_id, f"/tmp/{project_id}", "content")
+    ids = store.insert_chunks(
+        project_id,
+        [
+            {"file_path": "auth.py", "content": "auth code"},
+            {"file_path": "db.py", "content": "db code"},
+        ],
+    )
+    # auth.py: 5 reads, 2 edits, 3 search_hits = 10 total
+    for _ in range(5):
+        store.log_interaction(ids[0], "read", "Read", project_id, "auth.py")
+    for _ in range(2):
+        store.log_interaction(ids[0], "edit", "Edit", project_id, "auth.py")
+    for _ in range(3):
+        store.log_interaction(ids[0], "search_hit", "search", project_id, "auth.py")
+    # db.py: 2 reads = 2 total
+    for _ in range(2):
+        store.log_interaction(ids[1], "read", "Read", project_id, "db.py")
+
+    # Search logs: "jwt auth" found 3 times, "websocket" not found 2 times
+    store.log_search("jwt auth", project_id, "all", [ids[0]], 1)
+    store.log_search("jwt auth", project_id, "all", [ids[0]], 1)
+    store.log_search("jwt auth", project_id, "all", [ids[0]], 1)
+    store.log_search("websocket", project_id, "all", [], 0)
+    store.log_search("websocket", project_id, "all", [], 0)
+    store.log_search("rate limit", project_id, "all", [], 0)
+
+    return ids
+
+
+class TestTraceAggregations:
+    def test_get_hot_chunks(self, db_path):
+        store = Store(db_path)
+        _seed_interactions(store)
+        rows = store.get_hot_chunks(project_id="test", days=30, limit=10)
+        assert len(rows) == 2
+        assert rows[0]["file_path"] == "auth.py"
+        assert rows[0]["total"] == 10
+        assert rows[0]["reads"] == 5
+        assert rows[0]["edits"] == 2
+        assert rows[0]["searches"] == 3
+        assert rows[1]["file_path"] == "db.py"
+        assert rows[1]["total"] == 2
+
+    def test_get_hot_chunks_no_project_filter(self, db_path):
+        store = Store(db_path)
+        _seed_interactions(store)
+        rows = store.get_hot_chunks(project_id=None, days=30, limit=10)
+        assert len(rows) == 2
+
+    def test_get_knowledge_gaps(self, db_path):
+        store = Store(db_path)
+        _seed_interactions(store)
+        rows = store.get_knowledge_gaps(project_id="test", days=30, limit=10)
+        assert len(rows) == 2
+        assert rows[0]["query"] == "websocket"
+        assert rows[0]["count"] == 2
+        assert rows[1]["query"] == "rate limit"
+        assert rows[1]["count"] == 1
+
+    def test_get_knowledge_gaps_excludes_found(self, db_path):
+        """Gaps should not include queries that returned results."""
+        store = Store(db_path)
+        _seed_interactions(store)
+        rows = store.get_knowledge_gaps(project_id="test", days=30, limit=10)
+        queries = [r["query"] for r in rows]
+        assert "jwt auth" not in queries
+
+    def test_get_decaying_chunks(self, db_path):
+        """Decay requires interactions in previous window but not current."""
+        store = Store(db_path)
+        store.register_project("test", "/tmp/test", "content")
+        ids = store.insert_chunks("test", [{"file_path": "old.py", "content": "old"}])
+        # 10 interactions 45 days ago (in prev window for days=30)
+        conn = store._connect()
+        for _ in range(10):
+            store.log_interaction(ids[0], "read", "Read", "test", "old.py")
+        conn.execute("UPDATE chunk_interactions SET timestamp = datetime('now', '-45 days')")
+        conn.commit()
+
+        rows = store.get_decaying_chunks(project_id="test", days=30, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["file_path"] == "old.py"
+        assert rows[0]["before_count"] == 10
+        assert rows[0]["now_count"] == 0
+        assert rows[0]["ratio"] == 10.0
+
+    def test_get_decaying_chunks_active_excluded(self, db_path):
+        """Files still active should not appear in decay."""
+        store = Store(db_path)
+        _seed_interactions(store)  # All interactions are recent
+        rows = store.get_decaying_chunks(project_id="test", days=30, limit=10)
+        assert len(rows) == 0
+
+    def test_get_top_queries(self, db_path):
+        store = Store(db_path)
+        _seed_interactions(store)
+        rows = store.get_top_queries(project_id="test", days=30, limit=10)
+        assert len(rows) == 3
+        assert rows[0]["query"] == "jwt auth"
+        assert rows[0]["count"] == 3
+        assert rows[0]["avg_results"] == 1.0
+        assert rows[1]["query"] == "websocket"
+        assert rows[1]["count"] == 2
+        assert rows[1]["avg_results"] == 0.0
+
+    def test_get_hot_chunks_empty(self, db_path):
+        store = Store(db_path)
+        rows = store.get_hot_chunks(days=30, limit=10)
+        assert rows == []
+
+    def test_get_knowledge_gaps_empty(self, db_path):
+        store = Store(db_path)
+        rows = store.get_knowledge_gaps(days=30, limit=10)
+        assert rows == []

@@ -607,6 +607,149 @@ def cmd_install_launchd(args: argparse.Namespace) -> None:
     console.print(f"[dim]Logs: {log_dir}/index.log[/dim]")
 
 
+def _positive_int(value: str) -> int:
+    """Argparse type for positive integers."""
+    n = int(value)
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"{value} is not a positive integer")
+    return n
+
+
+def cmd_trace(args: argparse.Namespace) -> None:
+    """Analyze usage patterns from interaction and search data."""
+    from dnomia_knowledge.store import Store
+
+    store = Store(_get_db_path())
+
+    if args.project:
+        proj = store.get_project(args.project)
+        if not proj:
+            console.print(f"[red]Project '{args.project}' not found.[/red]")
+            store.close()
+            sys.exit(1)
+
+    mode = args.mode
+    days = args.days
+    limit = args.limit
+    project = args.project
+
+    if mode == "hot":
+        rows = store.get_hot_chunks(project, days, limit)
+        if not rows:
+            console.print("[dim]No trace data found.[/dim]")
+            store.close()
+            return
+
+        title = f"Hot Files (last {days} days)"
+        if project:
+            title += f"  {project}"
+        table = Table(title=title)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("File", style="bold")
+        table.add_column("R", justify="right")
+        table.add_column("E", justify="right")
+        table.add_column("S", justify="right")
+        table.add_column("Total", justify="right", style="green")
+
+        for i, r in enumerate(rows, 1):
+            proj_prefix = ""
+            if not project and r["project_id"]:
+                proj_prefix = f"[cyan]{r['project_id']}[/cyan] "
+            table.add_row(
+                str(i),
+                f"{proj_prefix}{r['file_path']}",
+                str(r["reads"]),
+                str(r["edits"]),
+                str(r["searches"]),
+                str(r["total"]),
+            )
+        console.print(table)
+
+    elif mode == "gaps":
+        rows = store.get_knowledge_gaps(project, days, limit)
+        if not rows:
+            console.print("[dim]No trace data found.[/dim]")
+            store.close()
+            return
+
+        title = f"Knowledge Gaps (last {days} days)"
+        if project:
+            title += f"  {project}"
+        table = Table(title=title)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Query", style="bold")
+        table.add_column("Count", justify="right")
+        table.add_column("Last Searched", style="dim")
+
+        for i, r in enumerate(rows, 1):
+            table.add_row(
+                str(i),
+                r["query"],
+                str(r["count"]),
+                r["last_searched"],
+            )
+        console.print(table)
+
+    elif mode == "decay":
+        rows = store.get_decaying_chunks(project, days, limit)
+        if not rows:
+            console.print("[dim]No trace data found.[/dim]")
+            store.close()
+            return
+
+        title = f"Decaying Files ({days}d vs prev {days}d)"
+        if project:
+            title += f"  {project}"
+        table = Table(title=title)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("File", style="bold")
+        table.add_column("Before", justify="right")
+        table.add_column("Now", justify="right")
+        table.add_column("Ratio", justify="right", style="red")
+
+        for i, r in enumerate(rows, 1):
+            proj_prefix = ""
+            if not project and r["project_id"]:
+                proj_prefix = f"[cyan]{r['project_id']}[/cyan] "
+            table.add_row(
+                str(i),
+                f"{proj_prefix}{r['file_path']}",
+                str(r["before_count"]),
+                str(r["now_count"]),
+                f"{r['ratio']}x",
+            )
+        console.print(table)
+
+    elif mode == "queries":
+        rows = store.get_top_queries(project, days, limit)
+        if not rows:
+            console.print("[dim]No trace data found.[/dim]")
+            store.close()
+            return
+
+        title = f"Top Queries (last {days} days)"
+        if project:
+            title += f"  {project}"
+        table = Table(title=title)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Query", style="bold")
+        table.add_column("Count", justify="right")
+        table.add_column("Avg Results", justify="right")
+        table.add_column("Last", style="dim")
+
+        for i, r in enumerate(rows, 1):
+            table.add_row(
+                str(i),
+                r["query"],
+                str(r["count"]),
+                str(r["avg_results"]),
+                r["last_searched"],
+            )
+        console.print(table)
+
+    store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnomia-knowledge",
@@ -672,6 +815,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_launchd.add_argument("--uninstall", action="store_true", help="Remove launchd job")
     p_launchd.set_defaults(func=cmd_install_launchd)
+
+    # trace
+    p_trace = subparsers.add_parser("trace", help="Analyze usage patterns")
+    p_trace.add_argument("mode", choices=["hot", "gaps", "decay", "queries"], help="Trace mode")
+    p_trace.add_argument("--project", "-p", help="Filter by project ID")
+    p_trace.add_argument("--days", "-d", type=_positive_int, default=30, help="Time window")
+    p_trace.add_argument("--limit", "-l", type=int, default=20, help="Max rows")
+    p_trace.set_defaults(func=cmd_trace)
 
     return parser
 

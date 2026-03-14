@@ -253,3 +253,47 @@ class TestGCFull:
             cli.cmd_gc(args)
             mock_interactions.assert_not_called()
             mock_logs.assert_not_called()
+
+
+class TestTraceParser:
+    def test_trace_hot(self):
+        parser = build_parser()
+        args = parser.parse_args(["trace", "hot"])
+        assert args.command == "trace"
+        assert args.mode == "hot"
+        assert args.days == 30
+        assert args.limit == 20
+        assert args.project is None
+
+    def test_trace_gaps_with_options(self):
+        parser = build_parser()
+        args = parser.parse_args(["trace", "gaps", "-p", "my-proj", "-d", "7", "-l", "5"])
+        assert args.mode == "gaps"
+        assert args.project == "my-proj"
+        assert args.days == 7
+        assert args.limit == 5
+
+    def test_trace_decay(self):
+        parser = build_parser()
+        args = parser.parse_args(["trace", "decay"])
+        assert args.mode == "decay"
+
+    def test_trace_queries(self):
+        parser = build_parser()
+        args = parser.parse_args(["trace", "queries"])
+        assert args.mode == "queries"
+
+    def test_trace_invalid_mode(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["trace", "invalid"])
+
+    def test_trace_negative_days(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["trace", "hot", "-d", "-5"])
+
+    def test_trace_zero_days(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["trace", "hot", "-d", "0"])

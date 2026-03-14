@@ -712,6 +712,161 @@ class Store:
         conn.commit()
         return cursor.rowcount
 
+    # -- Trace Aggregations --
+
+    def get_hot_chunks(
+        self,
+        project_id: str | None = None,
+        days: int = 30,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Most interacted files, grouped by (project_id, file_path)."""
+        conn = self._connect()
+        params: list = []
+        where_parts = ["ci.timestamp >= datetime('now', ?)"]
+        params.append(f"-{int(days)} days")
+
+        if project_id:
+            where_parts.append("ci.project_id = ?")
+            params.append(project_id)
+
+        where_sql = " AND ".join(where_parts)
+        params.append(limit)
+
+        sql = f"""
+            SELECT ci.project_id, ci.file_path,
+                SUM(CASE WHEN ci.interaction = 'read'
+                    THEN 1 ELSE 0 END) as reads,
+                SUM(CASE WHEN ci.interaction = 'edit'
+                    THEN 1 ELSE 0 END) as edits,
+                SUM(CASE WHEN ci.interaction = 'search_hit'
+                    THEN 1 ELSE 0 END) as searches,
+                COUNT(*) as total
+            FROM chunk_interactions ci
+            WHERE {where_sql}
+            GROUP BY ci.project_id, ci.file_path
+            ORDER BY total DESC, ci.file_path ASC
+            LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_knowledge_gaps(
+        self,
+        project_id: str | None = None,
+        days: int = 30,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Searches that returned 0 results, grouped by query."""
+        conn = self._connect()
+        params: list = []
+        where_parts = [
+            "result_count = 0",
+            "timestamp >= datetime('now', ?)",
+        ]
+        params.append(f"-{int(days)} days")
+
+        if project_id:
+            where_parts.append("project_id = ?")
+            params.append(project_id)
+
+        where_sql = " AND ".join(where_parts)
+        params.append(limit)
+
+        sql = f"""
+            SELECT query,
+                COUNT(*) as count,
+                MAX(timestamp) as last_searched
+            FROM search_log
+            WHERE {where_sql}
+            GROUP BY query
+            ORDER BY count DESC, query ASC
+            LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_decaying_chunks(
+        self,
+        project_id: str | None = None,
+        days: int = 30,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Files active in previous period but inactive now."""
+        conn = self._connect()
+        days_int = int(days)
+        prev_start = f"-{days_int * 2} days"
+        prev_end = f"-{days_int} days"
+        curr_start = f"-{days_int} days"
+
+        params: list = [prev_start, prev_end, curr_start, prev_start]
+        where_parts = ["ci.timestamp >= datetime('now', ?)"]
+
+        if project_id:
+            where_parts.append("ci.project_id = ?")
+            params.append(project_id)
+
+        where_sql = " AND ".join(where_parts)
+        params.append(limit)
+
+        sql = f"""
+            SELECT ci.project_id, ci.file_path,
+                SUM(CASE
+                    WHEN ci.timestamp >= datetime('now', ?)
+                         AND ci.timestamp < datetime('now', ?)
+                    THEN 1 ELSE 0
+                END) as before_count,
+                SUM(CASE
+                    WHEN ci.timestamp >= datetime('now', ?)
+                    THEN 1 ELSE 0
+                END) as now_count
+            FROM chunk_interactions ci
+            WHERE {where_sql}
+            GROUP BY ci.project_id, ci.file_path
+            HAVING before_count > 3
+               AND (before_count * 1.0 / (now_count + 1)) > 3
+            ORDER BY (before_count * 1.0 / (now_count + 1)) DESC,
+                     ci.file_path ASC
+            LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [
+            {**dict(r), "ratio": round(r["before_count"] / (r["now_count"] + 1), 1)} for r in rows
+        ]
+
+    def get_top_queries(
+        self,
+        project_id: str | None = None,
+        days: int = 30,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Most frequent search queries."""
+        conn = self._connect()
+        params: list = []
+        where_parts = ["timestamp >= datetime('now', ?)"]
+        params.append(f"-{int(days)} days")
+
+        if project_id:
+            where_parts.append("project_id = ?")
+            params.append(project_id)
+
+        where_sql = " AND ".join(where_parts)
+        params.append(limit)
+
+        sql = f"""
+            SELECT query,
+                COUNT(*) as count,
+                ROUND(AVG(result_count), 1) as avg_results,
+                MAX(timestamp) as last_searched
+            FROM search_log
+            WHERE {where_sql}
+            GROUP BY query
+            ORDER BY count DESC, query ASC
+            LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     # -- Search Log --
 
     def log_search(
