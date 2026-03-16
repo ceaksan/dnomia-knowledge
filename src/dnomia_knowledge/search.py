@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 
 from dnomia_knowledge.embedder import Embedder
 from dnomia_knowledge.models import SearchResult
@@ -107,8 +108,8 @@ class HybridSearch:
             counts = self._store.get_interaction_counts(
                 chunk_ids, days=30, interactions=["read", "edit"], project_id=project_id
             )
-        except Exception:
-            logger.debug("Failed to get interaction counts", exc_info=True)
+        except (sqlite3.Error, ValueError) as e:
+            logger.warning("Failed to get interaction counts: %s", e)
             return results
 
         for r in results:
@@ -133,8 +134,8 @@ class HybridSearch:
             self._store.batch_log_interactions(
                 [(r.chunk_id, "search_hit", "search", r.project_id, r.file_path) for r in results]
             )
-        except Exception:
-            logger.debug("Failed to log search results", exc_info=True)
+        except sqlite3.Error as e:
+            logger.warning("Failed to log search results: %s", e)
 
     @staticmethod
     def _build_filter_clauses(
@@ -194,7 +195,8 @@ class HybridSearch:
 
         try:
             rows = self._store.fetchall(sql, all_params)
-        except Exception:
+        except sqlite3.Error as e:
+            logger.warning("FTS5 search failed for query '%s': %s", query, e)
             return []
 
         return [self._row_to_result(r) for r in rows]
@@ -220,7 +222,8 @@ class HybridSearch:
         """
         try:
             vec_rows = self._store.fetchall(vec_sql, (json.dumps(query_vec), limit))
-        except Exception:
+        except sqlite3.Error as e:
+            logger.warning("Vector search failed: %s", e)
             return []
 
         if not vec_rows:
