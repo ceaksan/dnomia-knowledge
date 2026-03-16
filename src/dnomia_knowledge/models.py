@@ -23,6 +23,12 @@ class ChunkType(StrEnum):
     STYLE = "style"
 
 
+class InteractionType(StrEnum):
+    READ = "read"
+    EDIT = "edit"
+    SEARCH_HIT = "search_hit"
+
+
 class Chunk(BaseModel):
     """A chunk of content or code extracted from a file."""
 

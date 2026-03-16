@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import json
 
+from dnomia_knowledge.models import InteractionType
 from dnomia_knowledge.store import Store
+
+
+def test_interaction_type_enum_values():
+    assert InteractionType.READ == "read"
+    assert InteractionType.EDIT == "edit"
+    assert InteractionType.SEARCH_HIT == "search_hit"
 
 
 class TestStoreInit:

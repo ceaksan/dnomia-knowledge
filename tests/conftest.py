@@ -21,6 +21,16 @@ def db_path(tmp_dir):
     return str(tmp_dir / "test.db")
 
 
+@pytest.fixture
+def tmp_store(db_path):
+    """Store instance backed by a temp DB."""
+    from dnomia_knowledge.store import Store
+
+    store = Store(db_path)
+    yield store
+    store.close()
+
+
 @pytest.fixture(scope="session")
 def shared_embedder():
     """Session-scoped embedder to avoid reloading the model per test."""
