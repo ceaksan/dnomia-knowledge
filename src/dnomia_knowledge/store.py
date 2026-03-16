@@ -328,6 +328,10 @@ class Store:
     def insert_chunk_vectors(
         self, chunk_ids: list[int], vectors: list[list[float]], *, commit: bool = True
     ) -> None:
+        if len(chunk_ids) != len(vectors):
+            raise ValueError(
+                f"chunk_ids ({len(chunk_ids)}) and vectors ({len(vectors)}) must have equal length"
+            )
         conn = self._connect()
         for chunk_id, vec in zip(chunk_ids, vectors):
             conn.execute(

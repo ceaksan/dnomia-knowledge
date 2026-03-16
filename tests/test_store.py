@@ -786,3 +786,11 @@ class TestTraceAggregations:
         store = Store(db_path)
         rows = store.get_knowledge_gaps(days=30, limit=10)
         assert rows == []
+
+
+def test_insert_chunk_vectors_length_mismatch(tmp_store):
+    """insert_chunk_vectors raises ValueError on length mismatch."""
+    import pytest
+
+    with pytest.raises(ValueError, match="chunk_ids .* vectors .* must have equal length"):
+        tmp_store.insert_chunk_vectors([1, 2, 3], [[0.1] * 768, [0.2] * 768])
