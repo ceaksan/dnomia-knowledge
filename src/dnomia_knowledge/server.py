@@ -330,11 +330,10 @@ def create_server() -> FastMCP:
                 return "Error: project required for communities mode."
             import json as _json
 
-            conn = store._connect()
-            rows = conn.execute(
+            rows = store.fetchall(
                 "SELECT id, name, file_path, metadata FROM chunks WHERE project_id = ?",
                 (project_id,),
-            ).fetchall()
+            )
             communities: dict[str, list[str]] = {}
             for r in rows:
                 meta = _json.loads(r["metadata"]) if r["metadata"] else {}
