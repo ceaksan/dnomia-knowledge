@@ -90,7 +90,9 @@ def main() -> None:
             store.close()
 
     except Exception:
-        pass
+        import traceback
+
+        print(traceback.format_exc(), file=sys.stderr)
 
 
 if __name__ == "__main__":

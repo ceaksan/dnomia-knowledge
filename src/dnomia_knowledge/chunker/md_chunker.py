@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import frontmatter
+import yaml
 
 from dnomia_knowledge.models import Chunk
 
@@ -108,14 +109,14 @@ class MdChunker:
                     if isinstance(val, (list, dict, str, int, float, bool)):
                         result[key] = val
             return result if result else None
-        except Exception:
+        except (yaml.YAMLError, KeyError, TypeError, ValueError):
             return None
 
     def _strip_frontmatter(self, content: str) -> str:
         try:
             post = frontmatter.loads(content)
             return post.content
-        except Exception:
+        except (yaml.YAMLError, ValueError):
             return content
 
     def _split_by_headings(self, lines: list[str]) -> list[dict]:

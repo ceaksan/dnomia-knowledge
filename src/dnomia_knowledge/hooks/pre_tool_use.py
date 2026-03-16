@@ -124,7 +124,9 @@ def main() -> None:
         elif tool_name == "Grep":
             _handle_grep(data.get("tool_input", {}))
     except Exception:
-        pass
+        import traceback
+
+        print(traceback.format_exc(), file=sys.stderr)
 
 
 if __name__ == "__main__":
