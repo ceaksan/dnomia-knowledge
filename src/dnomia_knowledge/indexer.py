@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -265,7 +267,7 @@ class Indexer:
                 all_new_chunk_ids.extend(chunk_ids)
                 rel = os.path.relpath(file_path, project_path)
                 file_chunk_map[rel] = chunk_ids
-            except Exception as e:
+            except (OSError, sqlite3.Error, ValueError) as e:
                 logger.warning("Failed to index %s: %s", file_path, e)
 
         # Build graph edges if enabled
@@ -278,7 +280,7 @@ class Indexer:
                 for rel_path, cids in file_chunk_map.items():
                     builder.build_edges_for_file(project_id, rel_path, cids)
                 builder.build_semantic_edges(project_id, all_new_chunk_ids)
-            except Exception as e:
+            except (ImportError, sqlite3.Error, ValueError) as e:
                 logger.warning("Graph building failed: %s", e)
 
         # Update last_indexed
@@ -322,7 +324,7 @@ class Indexer:
             try:
                 lines = gitignore_path.read_text().splitlines()
                 gitignore_spec = pathspec.PathSpec.from_lines("gitignore", lines)
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 pass
 
         config_spec = pathspec.PathSpec.from_lines("gitignore", ignore_patterns)
@@ -508,7 +510,7 @@ class Indexer:
                         result.total_chunks,
                         result.duration_seconds,
                     )
-                except Exception as e:
+                except (OSError, sqlite3.Error, ValueError) as e:
                     logger.warning("Failed to index %s: %s", project_id, e)
 
             return results
@@ -557,7 +559,7 @@ class Indexer:
         try:
             with open(file_path, encoding="utf-8", errors="replace") as f:
                 return f.read()
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             return None
 
 
@@ -566,14 +568,12 @@ def _compute_file_hash(file_path: str) -> str:
     try:
         with open(file_path, "rb") as f:
             return hashlib.md5(f.read()).hexdigest()  # noqa: S324
-    except Exception:
+    except OSError:
         return ""
 
 
 def _get_git_head(directory: str) -> str | None:
     """Get current git HEAD commit hash, or None if not a git repo."""
-    import subprocess
-
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -584,7 +584,7 @@ def _get_git_head(directory: str) -> str | None:
         )
         if result.returncode == 0:
             return result.stdout.strip()
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         pass
     return None
 
