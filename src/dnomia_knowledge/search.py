@@ -193,7 +193,7 @@ class HybridSearch:
         all_params = [match_query] + params + [limit]
 
         try:
-            rows = self._store._connect().execute(sql, all_params).fetchall()
+            rows = self._store.fetchall(sql, all_params)
         except Exception:
             return []
 
@@ -209,7 +209,6 @@ class HybridSearch:
         file_pattern: str | None = None,
     ) -> list[SearchResult]:
         query_vec = self._embedder.embed_query(query)
-        conn = self._store._connect()
 
         # sqlite-vec KNN search
         vec_sql = """
@@ -220,7 +219,7 @@ class HybridSearch:
             LIMIT ?
         """
         try:
-            vec_rows = conn.execute(vec_sql, (json.dumps(query_vec), limit)).fetchall()
+            vec_rows = self._store.fetchall(vec_sql, (json.dumps(query_vec), limit))
         except Exception:
             return []
 
@@ -247,7 +246,7 @@ class HybridSearch:
             WHERE {where_sql}
         """
 
-        rows = conn.execute(sql, params).fetchall()
+        rows = self._store.fetchall(sql, params)
 
         results = []
         for r in rows:
