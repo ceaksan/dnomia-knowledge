@@ -59,12 +59,11 @@ class GraphBuilder:
         if not chunk_ids:
             return 0
 
-        conn = self.store._connect()
         edges: list[dict] = []
         threshold = self.config.semantic_threshold
 
         for cid in chunk_ids:
-            vec_row = conn.execute(
+            vec_row = self.store.execute_sql(
                 "SELECT embedding FROM chunks_vec WHERE id = ?", (cid,)
             ).fetchone()
             if vec_row is None:
@@ -72,13 +71,13 @@ class GraphBuilder:
 
             query_vec = vec_row[0]
             # sqlite-vec KNN query
-            rows = conn.execute(
+            rows = self.store.fetchall(
                 """SELECT id, distance
                    FROM chunks_vec
                    WHERE embedding MATCH ?
                    AND k = ?""",
                 (query_vec, 20),
-            ).fetchall()
+            )
 
             for row in rows:
                 neighbor_id = row[0]
@@ -110,7 +109,6 @@ class GraphBuilder:
         if not chunks:
             return 0
 
-        conn = self.store._connect()
         edges: list[dict] = []
 
         for chunk in chunks:
@@ -122,10 +120,10 @@ class GraphBuilder:
 
             for target_path in import_targets:
                 # Find chunks in the target file
-                target_rows = conn.execute(
+                target_rows = self.store.fetchall(
                     "SELECT id FROM chunks WHERE project_id = ? AND file_path = ?",
                     (project_id, target_path),
-                ).fetchall()
+                )
                 for tr in target_rows:
                     edges.append(
                         {
@@ -145,11 +143,10 @@ class GraphBuilder:
 
         self.store.delete_edges_for_project(project_id)
 
-        conn = self.store._connect()
-        files = conn.execute(
+        files = self.store.fetchall(
             "SELECT DISTINCT file_path FROM chunks WHERE project_id = ?",
             (project_id,),
-        ).fetchall()
+        )
 
         counts: dict[str, int] = {
             "link": 0,
@@ -161,10 +158,10 @@ class GraphBuilder:
 
         for row in files:
             fp = row[0]
-            chunk_rows = conn.execute(
+            chunk_rows = self.store.fetchall(
                 "SELECT id FROM chunks WHERE project_id = ? AND file_path = ?",
                 (project_id, fp),
-            ).fetchall()
+            )
             cids = [r[0] for r in chunk_rows]
 
             chunks = self._load_chunks(cids)
@@ -184,10 +181,10 @@ class GraphBuilder:
                     import_targets = self._parse_imports(chunk["content"], fp)
                     import_edges: list[dict] = []
                     for target_path in import_targets:
-                        target_rows = conn.execute(
+                        target_rows = self.store.fetchall(
                             "SELECT id FROM chunks WHERE project_id = ? AND file_path = ?",
                             (project_id, target_path),
-                        ).fetchall()
+                        )
                         for tr in target_rows:
                             import_edges.append(
                                 {
@@ -255,17 +252,15 @@ class GraphBuilder:
         """Load chunk rows by IDs."""
         if not chunk_ids:
             return []
-        conn = self.store._connect()
         placeholders = ",".join("?" for _ in chunk_ids)
-        rows = conn.execute(
+        rows = self.store.fetchall(
             f"SELECT * FROM chunks WHERE id IN ({placeholders})",  # noqa: S608
             chunk_ids,
-        ).fetchall()
+        )
         return [dict(r) for r in rows]
 
     def _build_link_edges(self, project_id: str, file_path: str, chunks: list[dict]) -> int:
         """Parse markdown links and create link edges."""
-        conn = self.store._connect()
         edges: list[dict] = []
 
         for chunk in chunks:
@@ -281,10 +276,10 @@ class GraphBuilder:
                 resolved = str(PurePosixPath(resolved))
 
                 # Find target chunks
-                target_rows = conn.execute(
+                target_rows = self.store.fetchall(
                     "SELECT id FROM chunks WHERE project_id = ? AND file_path = ?",
                     (project_id, resolved),
-                ).fetchall()
+                )
                 for tr in target_rows:
                     edges.append(
                         {
