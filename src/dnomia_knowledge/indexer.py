@@ -176,7 +176,7 @@ class Indexer:
             file_hash = _compute_file_hash(file_path)
         self.store.upsert_file_index(project_id, rel_path, file_hash, len(chunk_ids), commit=False)
 
-        self.store._connect().commit()
+        self.store.commit()
         return len(chunk_ids), chunk_ids
 
     def index_directory(
