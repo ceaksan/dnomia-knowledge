@@ -194,3 +194,20 @@ substantial test data for verifying the plain text indexing path."""
         mock_store.register_project.assert_called_once_with(
             "my-docs", "https://docs.example.com/api", "web"
         )
+
+
+def test_find_project_for_path_rejects_outside_path():
+    """Paths outside registered projects should not match."""
+    from dnomia_knowledge.server import _find_project_for_path
+    from unittest.mock import patch, MagicMock
+
+    mock_store = MagicMock()
+    mock_store.list_projects.return_value = [
+        {"id": "myproject", "path": "/project"},
+    ]
+
+    with patch("dnomia_knowledge.server._get_store", return_value=mock_store):
+        # Simulates a symlink resolved to /outside/secret.txt
+        # when project is at /project - should return None
+        result = _find_project_for_path("/outside/secret.txt")
+        assert result is None
