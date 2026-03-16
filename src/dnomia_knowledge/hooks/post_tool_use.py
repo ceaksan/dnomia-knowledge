@@ -64,6 +64,7 @@ def main() -> None:
         if not os.path.exists(db_path):
             return
 
+        from dnomia_knowledge.models import InteractionType
         from dnomia_knowledge.store import Store
 
         store = Store(db_path)
@@ -81,7 +82,7 @@ def main() -> None:
             if not chunk_ids:
                 return
 
-            interaction = "read" if tool_name == "Read" else "edit"
+            interaction = InteractionType.READ if tool_name == "Read" else InteractionType.EDIT
             batch = [
                 (cid, interaction, f"hook:{tool_name}", project_id, rel_path) for cid in chunk_ids
             ]

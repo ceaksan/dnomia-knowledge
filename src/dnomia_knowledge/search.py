@@ -8,7 +8,7 @@ import re
 import sqlite3
 
 from dnomia_knowledge.embedder import Embedder
-from dnomia_knowledge.models import SearchResult
+from dnomia_knowledge.models import InteractionType, SearchResult
 from dnomia_knowledge.store import Store
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,10 @@ class HybridSearch:
         chunk_ids = [r.chunk_id for r in results]
         try:
             counts = self._store.get_interaction_counts(
-                chunk_ids, days=30, interactions=["read", "edit"], project_id=project_id
+                chunk_ids,
+                days=30,
+                interactions=[InteractionType.READ, InteractionType.EDIT],
+                project_id=project_id,
             )
         except (sqlite3.Error, ValueError) as e:
             logger.warning("Failed to get interaction counts: %s", e)
@@ -132,7 +135,10 @@ class HybridSearch:
             chunk_ids = [r.chunk_id for r in results]
             self._store.log_search(query, project_id, domain, chunk_ids, len(results))
             self._store.batch_log_interactions(
-                [(r.chunk_id, "search_hit", "search", r.project_id, r.file_path) for r in results]
+                [
+                    (r.chunk_id, InteractionType.SEARCH_HIT, "search", r.project_id, r.file_path)
+                    for r in results
+                ]
             )
         except sqlite3.Error as e:
             logger.warning("Failed to log search results: %s", e)
