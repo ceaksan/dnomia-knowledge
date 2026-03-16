@@ -160,6 +160,18 @@ class Store:
                 self._conn.execute(pragma)
         return self._conn
 
+    def execute_sql(self, sql: str, params: tuple | list = ()) -> sqlite3.Cursor:
+        """Execute SQL and return cursor. For read queries or single writes."""
+        return self._connect().execute(sql, params)
+
+    def fetchall(self, sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
+        """Execute SQL and return all rows."""
+        return self._connect().execute(sql, params).fetchall()
+
+    def commit(self) -> None:
+        """Commit the current transaction."""
+        self._connect().commit()
+
     def _init_db(self) -> None:
         conn = self._connect()
         conn.executescript(_TABLES_SQL)

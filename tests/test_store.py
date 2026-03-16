@@ -14,6 +14,23 @@ def test_interaction_type_enum_values():
     assert InteractionType.SEARCH_HIT == "search_hit"
 
 
+def test_execute_sql(tmp_store):
+    """Store.execute_sql returns cursor for arbitrary SQL."""
+    tmp_store.register_project("p1", "/tmp/p1", "content")
+    cursor = tmp_store.execute_sql("SELECT id FROM projects WHERE id = ?", ("p1",))
+    rows = cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == "p1"
+
+
+def test_fetchall(tmp_store):
+    """Store.fetchall returns list of Row objects."""
+    tmp_store.register_project("p1", "/tmp/p1", "content")
+    rows = tmp_store.fetchall("SELECT id, type FROM projects WHERE id = ?", ("p1",))
+    assert len(rows) == 1
+    assert dict(rows[0]) == {"id": "p1", "type": "content"}
+
+
 class TestStoreInit:
     def test_creates_database(self, db_path):
         store = Store(db_path)
