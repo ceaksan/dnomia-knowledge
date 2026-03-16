@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
@@ -52,33 +53,43 @@ _embedder: Embedder | None = None
 _search: HybridSearch | None = None
 _indexer: Indexer | None = None
 
+_singleton_lock = threading.Lock()
+
 
 def _get_store() -> Store:
     global _store
     if _store is None:
-        db_path = os.environ.get("DNOMIA_KNOWLEDGE_DB", _DEFAULT_DB_PATH)
-        _store = Store(db_path)
+        with _singleton_lock:
+            if _store is None:
+                db_path = os.environ.get("DNOMIA_KNOWLEDGE_DB", _DEFAULT_DB_PATH)
+                _store = Store(db_path)
     return _store
 
 
 def _get_embedder() -> Embedder:
     global _embedder
     if _embedder is None:
-        _embedder = Embedder()
+        with _singleton_lock:
+            if _embedder is None:
+                _embedder = Embedder()
     return _embedder
 
 
 def _get_search() -> HybridSearch:
     global _search
     if _search is None:
-        _search = HybridSearch(_get_store(), _get_embedder())
+        with _singleton_lock:
+            if _search is None:
+                _search = HybridSearch(_get_store(), _get_embedder())
     return _search
 
 
 def _get_indexer() -> Indexer:
     global _indexer
     if _indexer is None:
-        _indexer = Indexer(_get_store(), _get_embedder())
+        with _singleton_lock:
+            if _indexer is None:
+                _indexer = Indexer(_get_store(), _get_embedder())
     return _indexer
 
 
