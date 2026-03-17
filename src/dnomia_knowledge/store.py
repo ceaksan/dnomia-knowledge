@@ -8,7 +8,7 @@ from pathlib import Path
 
 import sqlite_vec
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 _PRAGMAS = [
     "PRAGMA journal_mode = WAL",
@@ -136,6 +136,41 @@ CREATE INDEX IF NOT EXISTS idx_search_log_result_count ON search_log(result_coun
 CREATE INDEX IF NOT EXISTS idx_search_log_result_ts ON search_log(result_count, timestamp);
 """
 
+_GIT_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS git_commits (
+    project_id TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    summary TEXT,
+    PRIMARY KEY (project_id, hash),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_gc_project_ts ON git_commits(project_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS git_file_changes (
+    project_id TEXT NOT NULL,
+    commit_hash TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    old_file_path TEXT,
+    insertions INTEGER CHECK(insertions IS NULL OR insertions >= 0),
+    deletions INTEGER CHECK(deletions IS NULL OR deletions >= 0),
+    change_type TEXT NOT NULL CHECK(change_type IN ('A','M','D','R')),
+    is_binary INTEGER DEFAULT 0 CHECK(is_binary IN (0, 1)),
+    PRIMARY KEY (project_id, commit_hash, file_path),
+    FOREIGN KEY (project_id, commit_hash)
+        REFERENCES git_commits(project_id, hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_gfc_project_file ON git_file_changes(project_id, file_path);
+
+CREATE TABLE IF NOT EXISTS git_sync_state (
+    project_id TEXT PRIMARY KEY,
+    last_synced_hash TEXT,
+    last_synced_at INTEGER,
+    total_commits INTEGER DEFAULT 0,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+"""
+
 _DEFAULT_EMBEDDING_DIM = 768
 
 
@@ -176,6 +211,7 @@ class Store:
     def _init_db(self) -> None:
         conn = self._connect()
         conn.executescript(_TABLES_SQL)
+        conn.executescript(_GIT_TABLES_SQL)
         # Migration v1: add last_indexed_commit column
         try:
             conn.execute("ALTER TABLE projects ADD COLUMN last_indexed_commit TEXT")
@@ -226,6 +262,10 @@ class Store:
             )
             conn.commit()
 
+        current_version = self.get_metadata("schema_version")
+        if current_version == "2":
+            self._migrate_v2_to_v3()
+
         conn.executescript(_FTS_SQL)
         conn.executescript(_TRIGGERS_SQL)
         conn.execute(
@@ -240,6 +280,13 @@ class Store:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (SCHEMA_VERSION,),
         )
+        conn.commit()
+
+    def _migrate_v2_to_v3(self) -> None:
+        """Add git history tables."""
+        conn = self._connect()
+        conn.executescript(_GIT_TABLES_SQL)
+        conn.execute("INSERT OR REPLACE INTO system_metadata (key, value) VALUES ('schema_version', '3')")
         conn.commit()
 
     def close(self) -> None:

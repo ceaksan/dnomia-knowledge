@@ -74,8 +74,24 @@ class TestStoreInit:
             "SELECT value FROM system_metadata WHERE key = 'schema_version'"
         ).fetchone()
         assert row is not None
-        assert row[0] == "2"
+        assert row[0] == "3"
 
+
+    def test_git_tables_exist(self, db_path):
+        store = Store(db_path)
+        conn = store._connect()
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        tables = {row[0] for row in cursor.fetchall()}
+        assert "git_commits" in tables
+        assert "git_file_changes" in tables
+        assert "git_sync_state" in tables
+        store.close()
+
+    def test_schema_version_is_3(self, db_path):
+        store = Store(db_path)
+        version = store.get_metadata("schema_version")
+        assert version == "3"
+        store.close()
 
 class TestProjectCRUD:
     def test_register_project(self, db_path):
