@@ -170,7 +170,8 @@ class Store:
 
     def commit(self) -> None:
         """Commit the current transaction."""
-        self._connect().commit()
+        if self._conn is not None:
+            self._conn.commit()
 
     def _init_db(self) -> None:
         conn = self._connect()

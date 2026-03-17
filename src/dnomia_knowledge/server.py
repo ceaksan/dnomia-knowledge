@@ -53,7 +53,7 @@ _embedder: Embedder | None = None
 _search: HybridSearch | None = None
 _indexer: Indexer | None = None
 
-_singleton_lock = threading.Lock()
+_singleton_lock = threading.RLock()
 
 
 def _get_store() -> Store:
