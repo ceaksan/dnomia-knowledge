@@ -77,6 +77,33 @@ class TestCLIParser:
             parser.parse_args([])
 
 
+
+    def test_git_sync_command(self):
+        parser = build_parser()
+        args = parser.parse_args(["git-sync", "/tmp/repo"])
+        assert args.command == "git-sync"
+        assert args.path == "/tmp/repo"
+
+    def test_git_sync_force(self):
+        parser = build_parser()
+        args = parser.parse_args(["git-sync", "/tmp/repo", "--force"])
+        assert args.force is True
+
+    def test_analyze_churn(self):
+        parser = build_parser()
+        args = parser.parse_args(["analyze", "churn", "-p", "proj", "-d", "30"])
+        assert args.command == "analyze"
+        assert args.mode == "churn"
+        assert args.project == "proj"
+        assert args.days == 30
+
+    def test_analyze_crossover(self):
+        parser = build_parser()
+        args = parser.parse_args(["analyze", "crossover"])
+        assert args.mode == "crossover"
+        assert args.days == 90  # default
+
+
 class TestDoctorChecks:
     def test_chunk_vec_mismatch_detected(self, db_path):
         """Doctor should detect chunk/vec count mismatch."""

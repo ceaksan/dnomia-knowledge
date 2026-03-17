@@ -750,6 +750,171 @@ def cmd_trace(args: argparse.Namespace) -> None:
     store.close()
 
 
+def cmd_git_sync(args: argparse.Namespace) -> None:
+    """Sync git history for a project."""
+    from dnomia_knowledge.git_sync import GitSync, is_git_repo
+    from dnomia_knowledge.registry import load_config
+    from dnomia_knowledge.store import Store
+
+    path = os.path.abspath(args.path)
+    if not os.path.isdir(path):
+        console.print(f"[red]Error:[/red] {path} is not a directory.")
+        sys.exit(1)
+
+    if not is_git_repo(path):
+        console.print(f"[red]Error:[/red] {path} is not a git repository.")
+        sys.exit(1)
+
+    store = Store(_get_db_path())
+
+    config = load_config(path)
+    if config and hasattr(config, "name") and config.name:
+        project_id = config.name
+    else:
+        project_id = Path(path).name.lower().replace(" ", "-")
+
+    proj = store.get_project(project_id)
+    if not proj:
+        console.print(
+            f"[red]Error:[/red] Project '{project_id}' not indexed."
+            f" Run 'dnomia-knowledge index {path}' first."
+        )
+        store.close()
+        sys.exit(1)
+
+    git_sync = GitSync(store)
+
+    with console.status(f"[bold green]Syncing git history for '{project_id}'..."):
+        result = git_sync.sync(project_id, path, force=args.force)
+
+    console.print(f"\n[bold]{result.project_id}[/bold] git history synced")
+    console.print(f"  Mode: {result.mode}")
+    console.print(f"  Commits: {result.commits_parsed:,}")
+    console.print(f"  File changes: {result.changes_parsed:,}")
+    console.print(f"  Duration: {result.duration_seconds}s")
+
+    store.close()
+
+
+def cmd_analyze(args: argparse.Namespace) -> None:
+    """Analyze git history."""
+    from dnomia_knowledge.store import Store
+
+    store = Store(_get_db_path())
+
+    project = args.project
+    if project:
+        proj = store.get_project(project)
+        if not proj:
+            console.print(f"[red]Project '{project}' not found.[/red]")
+            store.close()
+            sys.exit(1)
+
+    days = args.days
+    limit = args.limit
+    mode = args.mode
+
+    if mode == "churn":
+        rows = store.get_churn(project, days, limit)
+        if not rows:
+            console.print("[dim]No git data found. Run 'dnomia-knowledge git-sync' first.[/dim]")
+            store.close()
+            return
+
+        title = f"Churn Analysis (last {days} days)"
+        if project:
+            title += f"  {project}"
+        table = Table(title=title)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("File", style="bold")
+        table.add_column("Commits", justify="right")
+        table.add_column("+", justify="right", style="green")
+        table.add_column("-", justify="right", style="red")
+        table.add_column("Churn", justify="right", style="bold")
+
+        for i, r in enumerate(rows, 1):
+            table.add_row(
+                str(i),
+                r["file_path"],
+                str(r["commit_count"]),
+                str(r["total_insertions"]),
+                str(r["total_deletions"]),
+                str(r["churn"]),
+            )
+        console.print(table)
+
+    elif mode == "hotspots":
+        rows = store.get_hotspots(project, days, limit)
+        if not rows:
+            console.print("[dim]No git data found.[/dim]")
+            store.close()
+            return
+
+        title = f"Hotspot Analysis (last {days} days)"
+        if project:
+            title += f"  {project}"
+        table = Table(title=title)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Directory", style="bold")
+        table.add_column("Commits", justify="right")
+        table.add_column("Churn", justify="right", style="bold")
+        table.add_column("Files", justify="right")
+
+        for i, r in enumerate(rows, 1):
+            table.add_row(
+                str(i),
+                r["directory"],
+                str(r["commit_count"]),
+                str(r["churn"]),
+                str(r["file_count"]),
+            )
+        console.print(table)
+
+    elif mode == "crossover":
+        from dnomia_knowledge.git_analyze import classify_crossover_results
+
+        rows = store.get_crossover(project, days, limit)
+        if not rows:
+            console.print("[dim]No crossover data found. Need both git-sync and trace data.[/dim]")
+            store.close()
+            return
+
+        classified = classify_crossover_results(rows)
+
+        title = f"Crossover Analysis (last {days} days)"
+        if project:
+            title += f"  {project}"
+        table = Table(title=title)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("File", style="bold")
+        table.add_column("Churn", justify="right")
+        table.add_column("Reads", justify="right")
+        table.add_column("Signal", justify="center")
+
+        signal_styles = {
+            "BLIND": "bold red",
+            "TURBULENT": "yellow",
+            "STABLE": "green",
+            "HOT": "bold cyan",
+            "ZOMBIE": "dim",
+            "COLD": "dim",
+        }
+
+        for i, r in enumerate(classified, 1):
+            signal = r["signal"]
+            style = signal_styles.get(signal, "")
+            table.add_row(
+                str(i),
+                r["file_path"],
+                str(r["churn"]),
+                str(r["reads"]),
+                f"[{style}]{signal}[/{style}]",
+            )
+        console.print(table)
+
+    store.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dnomia-knowledge",
@@ -823,6 +988,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_trace.add_argument("--days", "-d", type=_positive_int, default=30, help="Time window")
     p_trace.add_argument("--limit", "-l", type=int, default=20, help="Max rows")
     p_trace.set_defaults(func=cmd_trace)
+
+
+    # git-sync
+    p_git_sync = subparsers.add_parser("git-sync", help="Sync git history to database")
+    p_git_sync.add_argument(
+        "path", nargs="?", default=".", help="Project path (default: current dir)"
+    )
+    p_git_sync.add_argument("--force", action="store_true", help="Force full resync")
+    p_git_sync.set_defaults(func=cmd_git_sync)
+
+    # analyze
+    p_analyze = subparsers.add_parser("analyze", help="Analyze git history")
+    p_analyze.add_argument(
+        "mode", choices=["churn", "hotspots", "crossover"], help="Analysis type"
+    )
+    p_analyze.add_argument("--project", "-p", help="Filter by project ID")
+    p_analyze.add_argument(
+        "--days", "-d", type=_positive_int, default=90, help="Time window in days (default: 90)"
+    )
+    p_analyze.add_argument("--limit", "-l", type=int, default=20, help="Max rows (default: 20)")
+    p_analyze.set_defaults(func=cmd_analyze)
 
     return parser
 
