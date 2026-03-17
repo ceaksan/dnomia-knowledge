@@ -287,7 +287,9 @@ class Store:
         """Add git history tables."""
         conn = self._connect()
         conn.executescript(_GIT_TABLES_SQL)
-        conn.execute("INSERT OR REPLACE INTO system_metadata (key, value) VALUES ('schema_version', '3')")
+        conn.execute(
+            "INSERT OR REPLACE INTO system_metadata (key, value) VALUES ('schema_version', '3')"
+        )
         conn.commit()
 
     def close(self) -> None:
@@ -1021,9 +1023,7 @@ class Store:
         params.append(limit)
         return " AND ".join(parts), params
 
-    def save_git_commits(
-        self, commits: list[dict], *, commit: bool = True
-    ) -> None:
+    def save_git_commits(self, commits: list[dict], *, commit: bool = True) -> None:
         """Bulk insert git commits (INSERT OR IGNORE)."""
         conn = self._connect()
         conn.executemany(
@@ -1034,9 +1034,7 @@ class Store:
         if commit:
             conn.commit()
 
-    def save_git_file_changes(
-        self, changes: list[dict], *, commit: bool = True
-    ) -> None:
+    def save_git_file_changes(self, changes: list[dict], *, commit: bool = True) -> None:
         """Bulk insert git file changes (INSERT OR IGNORE)."""
         conn = self._connect()
         conn.executemany(
@@ -1065,9 +1063,7 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
-    def update_git_sync_state(
-        self, project_id: str, last_hash: str, total_commits: int
-    ) -> None:
+    def update_git_sync_state(self, project_id: str, last_hash: str, total_commits: int) -> None:
         """Insert or replace git sync state."""
         conn = self._connect()
         conn.execute(
@@ -1153,7 +1149,7 @@ class Store:
         git_where = " AND ".join(git_parts)
         trace_where = " AND ".join(trace_parts)
 
-        all_params = git_params + trace_params + git_params + trace_params + [limit]
+        all_params = git_params + trace_params + [limit]
 
         sql = f"""
             WITH churn AS (
@@ -1174,16 +1170,17 @@ class Store:
                 WHERE {trace_where} AND ci.interaction IN ('read', 'edit')
                 GROUP BY ci.file_path
             )
-            SELECT c.file_path, c.commit_count AS churn,
-                c.total_churn AS lines_changed,
-                COALESCE(r.interaction_count, 0) AS reads
-            FROM churn c LEFT JOIN reads r ON c.file_path = r.file_path
-            UNION ALL
-            SELECT r.file_path, 0 AS churn, 0 AS lines_changed,
-                r.interaction_count AS reads
-            FROM reads r LEFT JOIN churn c ON r.file_path = c.file_path
-            WHERE c.file_path IS NULL
-            ORDER BY churn + reads DESC LIMIT ?
+            SELECT * FROM (
+                SELECT c.file_path, c.commit_count AS churn,
+                    c.total_churn AS lines_changed,
+                    COALESCE(r.interaction_count, 0) AS reads
+                FROM churn c LEFT JOIN reads r ON c.file_path = r.file_path
+                UNION ALL
+                SELECT r.file_path, 0 AS churn, 0 AS lines_changed,
+                    r.interaction_count AS reads
+                FROM reads r LEFT JOIN churn c ON r.file_path = c.file_path
+                WHERE c.file_path IS NULL
+            ) ORDER BY churn + reads DESC LIMIT ?
         """
         rows = conn.execute(sql, all_params).fetchall()
         return [dict(r) for r in rows]
