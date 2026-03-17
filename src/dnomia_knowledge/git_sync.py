@@ -231,7 +231,7 @@ def get_git_log(repo_path: str, since_hash: str | None = None) -> str:
         "git",
         "log",
         "--numstat",
-        "--format=%H\x00%at\x00%s",
+        "--format=%H%x00%at%x00%s",
         "--no-merges",
         "-M",
     ]
