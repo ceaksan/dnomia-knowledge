@@ -288,6 +288,15 @@ class Indexer:
         self.store.update_project_last_indexed(project_id, commit_hash=commit_hash)
 
         duration = time.time() - start_time
+
+        # Incremental git sync (if project has been git-synced before)
+        try:
+            from .git_sync import GitSync
+            git_sync = GitSync(self.store)
+            git_sync.sync_incremental(project_id, project_path)
+        except Exception as e:
+            logger.warning("Git sync skipped: %s", e)
+
         return IndexResult(
             project_id=project_id,
             total_files=len(all_files),
