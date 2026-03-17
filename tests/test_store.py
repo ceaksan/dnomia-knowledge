@@ -810,3 +810,71 @@ def test_insert_chunk_vectors_length_mismatch(tmp_store):
 
     with pytest.raises(ValueError, match="chunk_ids .* vectors .* must have equal length"):
         tmp_store.insert_chunk_vectors([1, 2, 3], [[0.1] * 768, [0.2] * 768])
+
+
+class TestGitStore:
+    """Tests for git-related store methods."""
+
+    def test_save_and_get_commits(self, tmp_store):
+        tmp_store.register_project("proj", "/tmp/proj", "saas")
+        commits = [
+            {"project_id": "proj", "hash": "a" * 40, "timestamp": 1700000000, "summary": "first"},
+            {"project_id": "proj", "hash": "b" * 40, "timestamp": 1700086400, "summary": "second"},
+        ]
+        tmp_store.save_git_commits(commits)
+        conn = tmp_store._connect()
+        rows = conn.execute("SELECT * FROM git_commits WHERE project_id = 'proj'").fetchall()
+        assert len(rows) == 2
+
+    def test_save_file_changes(self, tmp_store):
+        tmp_store.register_project("proj", "/tmp/proj", "saas")
+        commits = [{"project_id": "proj", "hash": "a" * 40, "timestamp": 1700000000, "summary": "test"}]
+        tmp_store.save_git_commits(commits)
+        changes = [{
+            "project_id": "proj", "commit_hash": "a" * 40,
+            "file_path": "src/main.py", "old_file_path": None,
+            "insertions": 10, "deletions": 5, "change_type": "M", "is_binary": 0,
+        }]
+        tmp_store.save_git_file_changes(changes)
+        conn = tmp_store._connect()
+        rows = conn.execute("SELECT * FROM git_file_changes WHERE project_id = 'proj'").fetchall()
+        assert len(rows) == 1
+
+    def test_clear_git_data_cascades(self, tmp_store):
+        tmp_store.register_project("proj", "/tmp/proj", "saas")
+        commits = [{"project_id": "proj", "hash": "a" * 40, "timestamp": 1700000000, "summary": "test"}]
+        tmp_store.save_git_commits(commits)
+        changes = [{
+            "project_id": "proj", "commit_hash": "a" * 40,
+            "file_path": "src/main.py", "old_file_path": None,
+            "insertions": 10, "deletions": 5, "change_type": "M", "is_binary": 0,
+        }]
+        tmp_store.save_git_file_changes(changes)
+        tmp_store.clear_git_data("proj")
+        conn = tmp_store._connect()
+        assert conn.execute("SELECT COUNT(*) FROM git_commits WHERE project_id = 'proj'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM git_file_changes WHERE project_id = 'proj'").fetchone()[0] == 0
+
+    def test_get_churn(self, tmp_store):
+        import time
+
+        tmp_store.register_project("proj", "/tmp/proj", "saas")
+        now = int(time.time())
+        commits = [{"project_id": "proj", "hash": "a" * 40, "timestamp": now - 86400, "summary": "recent"}]
+        tmp_store.save_git_commits(commits)
+        changes = [{
+            "project_id": "proj", "commit_hash": "a" * 40, "file_path": "src/main.py",
+            "old_file_path": None, "insertions": 10, "deletions": 5, "change_type": "M", "is_binary": 0,
+        }]
+        tmp_store.save_git_file_changes(changes)
+        rows = tmp_store.get_churn("proj", days=90, limit=20)
+        assert len(rows) == 1
+        assert rows[0]["file_path"] == "src/main.py"
+        assert rows[0]["churn"] == 15
+
+    def test_sync_state(self, tmp_store):
+        tmp_store.register_project("proj", "/tmp/proj", "saas")
+        tmp_store.update_git_sync_state("proj", "abc123", 100)
+        state = tmp_store.get_git_sync_state("proj")
+        assert state["last_synced_hash"] == "abc123"
+        assert state["total_commits"] == 100

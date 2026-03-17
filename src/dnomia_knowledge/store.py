@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import sqlite_vec
@@ -1005,3 +1006,184 @@ class Store:
             (project_id, file_path),
         ).fetchone()
         return row[0] if row and row[0] else None
+
+    # -- Git Data --
+
+    @staticmethod
+    def _git_filter(days: int, project_id: str | None, limit: int) -> tuple[str, list]:
+        """Build WHERE clause and params for git queries."""
+        cutoff = int(time.time()) - (days * 86400)
+        params: list = [cutoff]
+        parts = ["gc.timestamp >= ?"]
+        if project_id:
+            parts.append("gc.project_id = ?")
+            params.append(project_id)
+        params.append(limit)
+        return " AND ".join(parts), params
+
+    def save_git_commits(
+        self, commits: list[dict], *, commit: bool = True
+    ) -> None:
+        """Bulk insert git commits (INSERT OR IGNORE)."""
+        conn = self._connect()
+        conn.executemany(
+            """INSERT OR IGNORE INTO git_commits (project_id, hash, timestamp, summary)
+               VALUES (:project_id, :hash, :timestamp, :summary)""",
+            commits,
+        )
+        if commit:
+            conn.commit()
+
+    def save_git_file_changes(
+        self, changes: list[dict], *, commit: bool = True
+    ) -> None:
+        """Bulk insert git file changes (INSERT OR IGNORE)."""
+        conn = self._connect()
+        conn.executemany(
+            """INSERT OR IGNORE INTO git_file_changes
+               (project_id, commit_hash, file_path, old_file_path,
+                insertions, deletions, change_type, is_binary)
+               VALUES (:project_id, :commit_hash, :file_path, :old_file_path,
+                       :insertions, :deletions, :change_type, :is_binary)""",
+            changes,
+        )
+        if commit:
+            conn.commit()
+
+    def clear_git_data(self, project_id: str) -> None:
+        """Delete all git data for a project (CASCADE handles file_changes)."""
+        conn = self._connect()
+        conn.execute("DELETE FROM git_commits WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM git_sync_state WHERE project_id = ?", (project_id,))
+        conn.commit()
+
+    def get_git_sync_state(self, project_id: str) -> dict | None:
+        """Get sync state for a project."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT * FROM git_sync_state WHERE project_id = ?", (project_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_git_sync_state(
+        self, project_id: str, last_hash: str, total_commits: int
+    ) -> None:
+        """Insert or replace git sync state."""
+        conn = self._connect()
+        conn.execute(
+            """INSERT OR REPLACE INTO git_sync_state
+               (project_id, last_synced_hash, total_commits, last_synced_at)
+               VALUES (?, ?, ?, datetime('now'))""",
+            (project_id, last_hash, total_commits),
+        )
+        conn.commit()
+
+    def get_churn(
+        self,
+        project_id: str | None = None,
+        days: int = 90,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Top files by churn (insertions + deletions)."""
+        conn = self._connect()
+        where_sql, params = self._git_filter(days, project_id, limit)
+        sql = f"""
+            SELECT gfc.file_path,
+                COUNT(DISTINCT gfc.commit_hash) AS commit_count,
+                SUM(COALESCE(gfc.insertions, 0)) AS total_insertions,
+                SUM(COALESCE(gfc.deletions, 0)) AS total_deletions,
+                SUM(COALESCE(gfc.insertions, 0) + COALESCE(gfc.deletions, 0)) AS churn
+            FROM git_file_changes gfc
+            JOIN git_commits gc ON gfc.project_id = gc.project_id
+                AND gfc.commit_hash = gc.hash
+            WHERE {where_sql} AND gfc.is_binary = 0 AND gfc.change_type != 'D'
+            GROUP BY gfc.file_path ORDER BY churn DESC LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_hotspots(
+        self,
+        project_id: str | None = None,
+        days: int = 90,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Top directories by churn."""
+        conn = self._connect()
+        where_sql, params = self._git_filter(days, project_id, limit)
+        sql = f"""
+            SELECT CASE
+                WHEN instr(gfc.file_path, '/') > 0
+                THEN substr(gfc.file_path, 1, instr(gfc.file_path, '/'))
+                ELSE '.' END AS directory,
+                COUNT(DISTINCT gfc.commit_hash) AS commit_count,
+                SUM(COALESCE(gfc.insertions, 0) + COALESCE(gfc.deletions, 0)) AS churn,
+                COUNT(DISTINCT gfc.file_path) AS file_count
+            FROM git_file_changes gfc
+            JOIN git_commits gc ON gfc.project_id = gc.project_id
+                AND gfc.commit_hash = gc.hash
+            WHERE {where_sql} AND gfc.is_binary = 0
+            GROUP BY directory ORDER BY churn DESC LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_crossover(
+        self,
+        project_id: str | None = None,
+        days: int = 90,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Files with both git churn and trace interactions (FULL OUTER JOIN)."""
+        conn = self._connect()
+        cutoff = int(time.time()) - (days * 86400)
+        datetime_offset = f"-{days} days"
+
+        git_params: list = [cutoff]
+        git_parts = ["gc.timestamp >= ?"]
+        trace_params: list = [datetime_offset]
+        trace_parts = ["ci.timestamp >= datetime('now', ?)"]
+
+        if project_id:
+            git_parts.append("gc.project_id = ?")
+            git_params.append(project_id)
+            trace_parts.append("ci.project_id = ?")
+            trace_params.append(project_id)
+
+        git_where = " AND ".join(git_parts)
+        trace_where = " AND ".join(trace_parts)
+
+        all_params = git_params + trace_params + git_params + trace_params + [limit]
+
+        sql = f"""
+            WITH churn AS (
+                SELECT gfc.file_path,
+                    COUNT(DISTINCT gfc.commit_hash) AS commit_count,
+                    SUM(COALESCE(gfc.insertions, 0) + COALESCE(gfc.deletions, 0))
+                        AS total_churn
+                FROM git_file_changes gfc
+                JOIN git_commits gc ON gfc.project_id = gc.project_id
+                    AND gfc.commit_hash = gc.hash
+                WHERE {git_where} AND gfc.is_binary = 0
+                GROUP BY gfc.file_path
+            ),
+            reads AS (
+                SELECT ci.file_path,
+                    COUNT(DISTINCT date(ci.timestamp)) AS interaction_count
+                FROM chunk_interactions ci
+                WHERE {trace_where} AND ci.interaction IN ('read', 'edit')
+                GROUP BY ci.file_path
+            )
+            SELECT c.file_path, c.commit_count AS churn,
+                c.total_churn AS lines_changed,
+                COALESCE(r.interaction_count, 0) AS reads
+            FROM churn c LEFT JOIN reads r ON c.file_path = r.file_path
+            UNION ALL
+            SELECT r.file_path, 0 AS churn, 0 AS lines_changed,
+                r.interaction_count AS reads
+            FROM reads r LEFT JOIN churn c ON r.file_path = c.file_path
+            WHERE c.file_path IS NULL
+            ORDER BY churn + reads DESC LIMIT ?
+        """
+        rows = conn.execute(sql, all_params).fetchall()
+        return [dict(r) for r in rows]
