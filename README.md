@@ -153,6 +153,72 @@ launchctl list | grep dnomia-knowledge
 tail -f ~/.local/share/dnomia-knowledge/index.log
 ```
 
+## Git History Analysis
+
+### git-sync
+
+Parses git log and stores commit history and per-file diff stats in SQLite.
+
+```bash
+# Sync git history for a project (incremental after first run)
+dnomia-knowledge git-sync /path/to/project
+
+# Force full resync (re-parses entire git history)
+dnomia-knowledge git-sync /path/to/project --force
+```
+
+First run parses full history. Subsequent runs are incremental: only new commits since the last synced hash are parsed. `--force` bypasses this and re-parses from scratch.
+
+**Prerequisites:** The target path must be a git repository. Git must be available in PATH.
+
+### analyze
+
+Analyze git history data. All subcommands share the same options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project` / `-p` | all | Filter by project ID |
+| `--days` / `-d` | 90 | Time window in days |
+| `--limit` / `-l` | 20 | Max rows to display |
+
+#### churn
+
+Most modified files by total churn (insertions + deletions).
+
+```bash
+dnomia-knowledge analyze churn
+dnomia-knowledge analyze churn -p my-project -d 30 -l 10
+```
+
+#### hotspots
+
+Directory-level churn aggregation. Groups file churn by parent directory to surface which areas of the codebase change most.
+
+```bash
+dnomia-knowledge analyze hotspots
+dnomia-knowledge analyze hotspots -p my-project -d 60
+```
+
+#### crossover
+
+Fuses git churn data with trace read data. Assigns a signal to each file based on how much it changes versus how often it is read.
+
+```bash
+dnomia-knowledge analyze crossover
+dnomia-knowledge analyze crossover -p my-project -d 90 -l 30
+```
+
+Signals use P75-based thresholds computed from the result set:
+
+| Signal | Meaning |
+|--------|---------|
+| BLIND | High churn, zero reads. Actively changing but never consulted. |
+| TURBULENT | High churn, low reads. Unstable and under-monitored. |
+| HOT | High churn, high reads. Core active area. |
+| STABLE | Low churn, high reads. Settled reference code. |
+| ZOMBIE | Zero churn, some reads. Read but never touched. |
+| COLD | Low churn, low reads. Inactive. |
+
 ## Trace Analytics
 
 Usage pattern analysis from accumulated interaction and search data. Requires no extra setup: data is collected automatically as you use search and read/edit files.
@@ -184,6 +250,37 @@ dnomia-knowledge trace queries
 dnomia-knowledge trace hot -p my-project -d 7 -l 5
 ```
 
+## Claude Code Hooks
+
+### Pre/Post Tool Use Hooks
+
+Python-based hooks that integrate with Claude Code's tool lifecycle:
+
+- **PreToolUse (Read|Grep)**: Enriches file reads with knowledge base context
+- **PostToolUse (Read|Edit)**: Tracks file interactions for trace analytics
+
+Configured in `~/.claude/settings.json` under `hooks.PreToolUse` and `hooks.PostToolUse`.
+
+### WIP Persistence Hooks
+
+Shell scripts that prevent work-in-progress loss during context compaction:
+
+- **PreCompact (`scripts/checkpoint-wip.sh`)**: Saves current branch, modified files, git status, and active tasks to `~/.claude/state/` before context is compressed
+- **SessionStart (`scripts/restore-wip.sh`)**: Restores checkpoint as `additionalContext` when a new session starts, so Claude knows where you left off
+
+Checkpoints auto-expire after 24 hours and are removed after one restore.
+
+```bash
+# Checkpoint format (~/.claude/state/wip-{project}.json)
+{
+  "project": "content-intelligence",
+  "branch": "main",
+  "modified_files": ["src/actions/link_validator.py"],
+  "git_status": "1 file changed, 95 insertions(+)",
+  "timestamp": "2026-03-17T08:12:42Z"
+}
+```
+
 ## Technical Details
 
 - **DB**: SQLite + FTS5 (BM25 keyword) + sqlite-vec (cosine KNN)
@@ -192,7 +289,7 @@ dnomia-knowledge trace hot -p my-project -d 7 -l 5
 - **Chunking**: `##`/`###` heading split, frontmatter parsing, min 200 char merge, overlap support
 - **Incremental**: MD5 content hash for change detection
 - **Memory**: Lazy model loading, explicit unload, runs on 8GB RAM
-- **Schema**: v2, auto-migrates from v1 on first run
+- **Schema**: v3, auto-migrates from v1/v2 on first run. v3 adds git_commits, git_file_changes, git_sync_state tables.
 
 ## Testing
 
