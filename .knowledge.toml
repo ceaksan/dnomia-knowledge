@@ -1,0 +1,17 @@
+[project]
+name = "dnomia-knowledge"
+type = "saas"
+
+[content]
+extensions = [".md", ".mdx"]
+
+[code]
+preset = "python"
+paths = ["src"]
+
+[graph]
+enabled = true
+edge_types = ["link", "tag", "category", "semantic", "import"]
+
+[indexing]
+ignore_patterns = ["node_modules", "dist", "__pycache__", ".venv", "*.egg-info", ".git", ".mypy_cache", ".ruff_cache", ".pytest_cache", "build", "docs"]
