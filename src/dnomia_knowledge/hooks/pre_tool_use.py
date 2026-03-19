@@ -53,6 +53,10 @@ def _handle_read(tool_input: dict) -> None:
     if not file_path or not os.path.isfile(file_path):
         return
 
+    # If limit is specified, this is a partial read — allow it
+    if tool_input.get("limit"):
+        return
+
     line_count = _count_file_lines(file_path)
     if line_count <= 300:
         return
