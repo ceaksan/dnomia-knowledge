@@ -37,6 +37,13 @@ if [ -f "$TODO_FILE" ]; then
   TODOS=$(cat "$TODO_FILE" 2>/dev/null || echo "")
 fi
 
+# Reflection: son commit mesaji + son degisen dosyalarin ozeti
+# Meta-RL research: reflection-only > full trajectory (LaMer, ICLR 2026)
+LAST_COMMITS=""
+if [ -d "$CWD/.git" ] || git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1; then
+  LAST_COMMITS=$(cd "$CWD" && git log --oneline -3 2>/dev/null || echo "")
+fi
+
 jq -n \
   --arg cwd "$CWD" \
   --arg project "$PROJECT_NAME" \
@@ -46,6 +53,7 @@ jq -n \
   --arg staged "$STAGED" \
   --arg status "$STATUS" \
   --arg todos "$TODOS" \
+  --arg reflection "$LAST_COMMITS" \
   --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{
     cwd: $cwd,
@@ -56,6 +64,7 @@ jq -n \
     staged_files: ($staged | split("\n") | map(select(. != ""))),
     git_status: $status,
     todos: $todos,
+    reflection: $reflection,
     timestamp: $time
   }' > "$CHECKPOINT"
 

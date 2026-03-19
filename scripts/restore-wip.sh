@@ -34,6 +34,7 @@ MODIFIED=$(jq -r '.modified_files | join(", ")' "$CHECKPOINT")
 STAGED=$(jq -r '.staged_files | join(", ")' "$CHECKPOINT")
 GIT_STATUS=$(jq -r '.git_status // ""' "$CHECKPOINT")
 TODOS=$(jq -r '.todos // ""' "$CHECKPOINT")
+REFLECTION=$(jq -r '.reflection // ""' "$CHECKPOINT")
 TIMESTAMP=$(jq -r '.timestamp // ""' "$CHECKPOINT")
 
 # Context mesaji olustur
@@ -43,6 +44,7 @@ CONTEXT="[WIP RECOVERED] Onceki session'dan kalan calisma durumu (${TIMESTAMP}):
 [ -n "$STAGED" ] && [ "$STAGED" != "" ] && CONTEXT="$CONTEXT\nStaged: $STAGED"
 [ -n "$GIT_STATUS" ] && CONTEXT="$CONTEXT\nGit durumu: $GIT_STATUS"
 [ -n "$TODOS" ] && [ "$TODOS" != "" ] && CONTEXT="$CONTEXT\nAktif gorevler: $TODOS"
+[ -n "$REFLECTION" ] && [ "$REFLECTION" != "" ] && CONTEXT="$CONTEXT\nSon aktivite: $REFLECTION"
 
 # additionalContext olarak dondur
 jq -n --arg ctx "$(echo -e "$CONTEXT")" '{additionalContext: $ctx}'
