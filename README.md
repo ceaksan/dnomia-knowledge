@@ -4,6 +4,18 @@ Local knowledge engine for codebases. Indexes your markdown and source code into
 
 Built for [Claude Code](https://claude.ai/claude-code) via MCP (Model Context Protocol). Works entirely on your machine. Your code never leaves your computer.
 
+## Why
+
+Developer tools treat every session as a blank slate. You search for the same function, re-read the same config file, and re-discover the same architectural pattern across dozens of conversations. Grep finds exact strings but misses semantic matches. Embeddings find related concepts but miss exact terms. Neither remembers what you searched for last week.
+
+Existing solutions don't fit solo developers:
+
+- **GitHub Copilot / Cursor indexing** is cloud-dependent and opaque. Your code leaves your machine.
+- **RAG pipelines** require infrastructure (vector DBs, embedding APIs, chunking services) that cost money and attention.
+- **IDE search** is per-project, per-session, with no memory of what matters to you.
+
+dnomia-knowledge runs entirely on your machine: one SQLite database, one embedding model, hybrid search that combines keyword precision with semantic recall. It tracks which files you actually read and edit, boosts search results by your usage patterns, and syncs automatically on every commit. No cloud, no API keys, no infrastructure to manage.
+
 ## What it does
 
 **Hybrid search** across your projects. Not just grep, not just embeddings. FTS5 (BM25) and sqlite-vec (cosine KNN) run in parallel, merged with Reciprocal Rank Fusion. Finds code and documentation that keyword search misses and vector search misranks.
